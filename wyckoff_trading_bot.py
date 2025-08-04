@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Enhanced Wyckoff Automated Trading Bot with Dynamic Position Sizing
+Enhanced Wyckoff Automated Trading Bot with Dynamic Scaling
 Features:
 - Phase-based stop losses aligned with Wyckoff methodology
 - Dynamic position sizing that scales with available capital
+- Dynamic balance preservation that grows with account size
 - Multi-account support (Cash + Margin)
 - Day trade prevention
 - Only manages positions created by this system
@@ -379,7 +380,7 @@ class EnhancedWyckoffTradingBot:
         # Dynamic position sizing configuration
         self.base_trade_amount = 5.00  # Starting trade size
         self.max_trade_amount = 50.00  # Maximum trade size
-        self.min_account_balance = 50.00  # Minimum balance to keep
+        self.base_min_balance = 50.00  # Starting minimum balance
         
         # Scaling tiers for position sizing
         self.position_scaling_tiers = [
@@ -389,6 +390,16 @@ class EnhancedWyckoffTradingBot:
             {'min_cash': 1000, 'trade_amount': 25.00},   # $25 for $1000-1999
             {'min_cash': 2000, 'trade_amount': 35.00},   # $35 for $2000-4999
             {'min_cash': 5000, 'trade_amount': 50.00},   # $50 for $5000+
+        ]
+        
+        # Scaling tiers for minimum account balance to preserve
+        self.balance_scaling_tiers = [
+            {'min_cash': 0, 'min_balance': 50.00},       # $50 buffer for $0-499
+            {'min_cash': 500, 'min_balance': 100.00},    # $100 buffer for $500-999
+            {'min_cash': 1000, 'min_balance': 150.00},   # $150 buffer for $1000-1999
+            {'min_cash': 2000, 'min_balance': 200.00},   # $200 buffer for $2000-4999
+            {'min_cash': 5000, 'min_balance': 300.00},   # $300 buffer for $5000-9999
+            {'min_cash': 10000, 'min_balance': 500.00},  # $500 buffer for $10000+
         ]
         
         # Phase-based stop loss configuration (Wyckoff method)
@@ -438,6 +449,7 @@ class EnhancedWyckoffTradingBot:
         self.logger.info(f"📝 Log: {log_filename.name}")
         self.logger.info("🛡️ Using Phase-Based Wyckoff Stop Loss Strategy")
         self.logger.info("💰 Using Dynamic Position Sizing Based on Available Capital")
+        self.logger.info("🛡️ Using Dynamic Balance Preservation That Scales With Growth")
     
     def initialize_systems(self) -> bool:
         """Initialize all required systems"""
@@ -462,6 +474,15 @@ class EnhancedWyckoffTradingBot:
                     next_tier = self.position_scaling_tiers[self.position_scaling_tiers.index(tier) + 1]
                     self.logger.info(f"   ${tier['min_cash']:,}-${next_tier['min_cash']-1:,}: ${tier['trade_amount']:.2f} per trade")
             self.logger.info(f"   Maximum trade size: ${self.max_trade_amount:.2f}")
+            
+            # Log dynamic balance preservation configuration
+            self.logger.info("🛡️ Dynamic Balance Preservation Configuration:")
+            for tier in self.balance_scaling_tiers:
+                if tier == self.balance_scaling_tiers[-1]:
+                    self.logger.info(f"   ${tier['min_cash']:,}+: ${tier['min_balance']:.2f} minimum balance")
+                else:
+                    next_tier = self.balance_scaling_tiers[self.balance_scaling_tiers.index(tier) + 1]
+                    self.logger.info(f"   ${tier['min_cash']:,}-${next_tier['min_cash']-1:,}: ${tier['min_balance']:.2f} minimum balance")
             
             # Log phase-based stop configuration
             self.logger.info("🎯 Phase-Based Stop Loss Configuration:")
@@ -491,6 +512,18 @@ class EnhancedWyckoffTradingBot:
         trade_amount = min(trade_amount, self.max_trade_amount)
         
         return trade_amount
+    
+    def get_dynamic_min_balance(self, total_available_cash: float) -> float:
+        """Calculate minimum balance to preserve based on available cash using scaling tiers"""
+        # Find the appropriate tier
+        min_balance = self.base_min_balance
+        
+        for tier in reversed(self.balance_scaling_tiers):  # Start from highest tier
+            if total_available_cash >= tier['min_cash']:
+                min_balance = tier['min_balance']
+                break
+        
+        return min_balance
     
     def get_phase_stop_percentage(self, phase: str) -> float:
         """Get stop loss percentage based on Wyckoff phase"""
@@ -1080,9 +1113,11 @@ class EnhancedWyckoffTradingBot:
                     # Calculate total available cash across all accounts for dynamic sizing
                     total_available_cash = sum(acc.settled_funds for acc in enabled_accounts)
                     dynamic_trade_amount = self.get_dynamic_trade_amount(total_available_cash)
+                    dynamic_min_balance = self.get_dynamic_min_balance(total_available_cash)
                     
                     self.logger.info(f"💰 Processing {len(buy_signals)} buy signals across multiple accounts...")
                     self.logger.info(f"📊 Dynamic position sizing: ${dynamic_trade_amount:.2f} per trade (based on ${total_available_cash:.2f} total cash)")
+                    self.logger.info(f"🛡️ Dynamic balance preservation: ${dynamic_min_balance:.2f} minimum balance")
                     
                     executed_buys = 0
                     signal_index = 0
@@ -1092,15 +1127,15 @@ class EnhancedWyckoffTradingBot:
                         if signal_index >= len(buy_signals):
                             break
                         
-                        # Calculate trades this account can afford with dynamic sizing
-                        account_max_trades = int((account.settled_funds - self.min_account_balance) / dynamic_trade_amount)
+                        # Calculate trades this account can afford with dynamic sizing and balance
+                        account_max_trades = int((account.settled_funds - dynamic_min_balance) / dynamic_trade_amount)
                         account_max_trades = min(account_max_trades, 3)  # Limit per account
                         
                         if account_max_trades <= 0:
-                            self.logger.info(f"💸 {account.account_type}: Insufficient funds (${account.settled_funds:.2f} < ${dynamic_trade_amount:.2f} + ${self.min_account_balance:.2f})")
+                            self.logger.info(f"💸 {account.account_type}: Insufficient funds (${account.settled_funds:.2f} < ${dynamic_trade_amount:.2f} + ${dynamic_min_balance:.2f})")
                             continue
                         
-                        self.logger.info(f"💰 {account.account_type}: Can afford {account_max_trades} positions at ${dynamic_trade_amount:.2f} each")
+                        self.logger.info(f"💰 {account.account_type}: Can afford {account_max_trades} positions at ${dynamic_trade_amount:.2f} each (preserving ${dynamic_min_balance:.2f})")
                         
                         account_buys = 0
                         
@@ -1167,7 +1202,7 @@ class EnhancedWyckoffTradingBot:
         log_details = ""
         
         try:
-            self.logger.info("🚀 Starting Enhanced Wyckoff Trading Bot with Dynamic Position Sizing")
+            self.logger.info("🚀 Starting Enhanced Wyckoff Trading Bot with Dynamic Scaling")
             
             # Initialize all systems
             if not self.initialize_systems():
@@ -1222,6 +1257,7 @@ class EnhancedWyckoffTradingBot:
             self.logger.info(f"   Total Portfolio Value: ${total_portfolio_value:.2f}")
             self.logger.info(f"   Total Available Cash: ${total_available_cash:.2f}")
             self.logger.info(f"   Position Size Used: ${self.get_dynamic_trade_amount(total_available_cash):.2f} per trade")
+            self.logger.info(f"   Balance Preserved: ${self.get_dynamic_min_balance(total_available_cash):.2f} minimum balance")
             self.logger.info(f"   Execution Time: {execution_time:.1f}s")
             self.logger.info(f"   Stop Strategy: Phase-based Wyckoff method")
             self.logger.info(f"   Accounts Used: {len(enabled_accounts)} ({', '.join(acc.account_type for acc in enabled_accounts)})")
@@ -1250,8 +1286,8 @@ class EnhancedWyckoffTradingBot:
 
 
 def main():
-    """Main entry point for the enhanced trading bot with dynamic position sizing"""
-    print("🤖 Enhanced Wyckoff Trading Bot with Dynamic Position Sizing Starting...")
+    """Main entry point for the enhanced trading bot with dynamic scaling"""
+    print("🤖 Enhanced Wyckoff Trading Bot with Dynamic Scaling Starting...")
     
     bot = EnhancedWyckoffTradingBot()
     success = bot.run()
