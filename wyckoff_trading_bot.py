@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhanced Wyckoff Automated Trading Bot with Dynamic Scaling
-Features:
-- Phase-based stop losses aligned with Wyckoff methodology
-- Dynamic position sizing that scales with available capital
-- Dynamic balance preservation that grows with account size
-- Multi-account support (Cash + Margin)
-- Day trade prevention
-- Only manages positions created by this system
+ENHANCED: Fixed session expiration issues for trading operations
 """
 
 import sys
@@ -368,7 +361,7 @@ class EnhancedTradingDatabase:
 
 
 class EnhancedWyckoffTradingBot:
-    """Enhanced trading bot with stop loss management and day trade prevention"""
+    """Enhanced trading bot with session validation and stop loss management"""
     
     def __init__(self):
         self.logger = None
@@ -385,8 +378,8 @@ class EnhancedWyckoffTradingBot:
         # Scaling tiers for position sizing
         self.position_scaling_tiers = [
             {'min_cash': 0, 'trade_amount': 5.00},       # $5 for $0-199
-            {'min_cash': 200, 'trade_amount': 10.00},    # $10 for $200-499
-            {'min_cash': 500, 'trade_amount': 15.00},    # $15 for $500-999
+            {'min_cash': 300, 'trade_amount': 10.00},    # $10 for $200-499
+            {'min_cash': 600, 'trade_amount': 15.00},    # $15 for $500-999
             {'min_cash': 1000, 'trade_amount': 25.00},   # $25 for $1000-1999
             {'min_cash': 2000, 'trade_amount': 35.00},   # $35 for $2000-4999
             {'min_cash': 5000, 'trade_amount': 50.00},   # $50 for $5000+
@@ -498,6 +491,86 @@ class EnhancedWyckoffTradingBot:
             self.logger.error(f"❌ Failed to initialize systems: {e}")
             return False
     
+    def validate_and_refresh_session(self) -> bool:
+        """Validate session and refresh trade token if needed"""
+        try:
+            wb = self.main_system.wb
+            
+            # Test if we can make a basic API call
+            try:
+                account_info = wb.get_account()
+                if not account_info:
+                    self.logger.warning("⚠️ Basic session test failed")
+                    return self.full_reauthentication()
+            except Exception as e:
+                self.logger.warning(f"⚠️ Session validation failed: {e}")
+                return self.full_reauthentication()
+            
+            # Test if trade token is valid by making a test call
+            # We'll try to get current orders which requires trade token
+            try:
+                wb.get_current_orders()
+                self.logger.debug("✅ Trade token validation passed")
+                return True
+            except Exception as e:
+                error_msg = str(e).lower()
+                if 'expired' in error_msg or 'login' in error_msg:
+                    self.logger.warning("⚠️ Trade token expired, attempting refresh...")
+                    return self.refresh_trade_token()
+                else:
+                    self.logger.warning(f"⚠️ Trade token test failed: {e}")
+                    return self.refresh_trade_token()
+                    
+        except Exception as e:
+            self.logger.error(f"❌ Session validation error: {e}")
+            return False
+    
+    def refresh_trade_token(self) -> bool:
+        """Refresh the trade token"""
+        try:
+            self.logger.info("🔄 Refreshing trade token...")
+            
+            # Load credentials
+            credentials = self.main_system.credential_manager.load_credentials()
+            
+            # Get new trade token
+            if self.main_system.wb.get_trade_token(credentials['trading_pin']):
+                self.logger.info("✅ Trade token refreshed successfully")
+                
+                # Save the updated session
+                self.main_system.session_manager.save_session(self.main_system.wb)
+                return True
+            else:
+                self.logger.error("❌ Failed to refresh trade token")
+                return self.full_reauthentication()
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error refreshing trade token: {e}")
+            return self.full_reauthentication()
+    
+    def full_reauthentication(self) -> bool:
+        """Perform full reauthentication when session can't be refreshed"""
+        try:
+            self.logger.warning("🔄 Session expired, performing full reauthentication...")
+            
+            # Clear existing session
+            self.main_system.session_manager.clear_session()
+            
+            # Perform fresh login
+            if self.main_system.login_manager.login_automatically():
+                self.logger.info("✅ Full reauthentication successful")
+                
+                # Save new session
+                self.main_system.session_manager.save_session(self.main_system.wb)
+                return True
+            else:
+                self.logger.error("❌ Full reauthentication failed")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"❌ Full reauthentication error: {e}")
+            return False
+    
     def get_dynamic_trade_amount(self, total_available_cash: float) -> float:
         """Calculate trade size based on available cash using scaling tiers"""
         # Find the appropriate tier
@@ -562,28 +635,6 @@ class EnhancedWyckoffTradingBot:
         
         enabled_accounts.sort(key=account_priority)
         return enabled_accounts
-    
-    def get_trading_account(self):
-        """Get the best account for trading"""
-        enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
-        
-        if not enabled_accounts:
-            self.logger.error("❌ No enabled accounts found")
-            return None
-        
-        # Prefer cash account for day trading, then margin
-        for account in enabled_accounts:
-            if account.account_type in ['Cash Account', 'CASH']:
-                if account.settled_funds >= self.min_account_balance:
-                    return account
-        
-        # Fallback to any account with sufficient funds
-        for account in enabled_accounts:
-            if account.settled_funds >= self.min_account_balance:
-                return account
-        
-        self.logger.error("❌ No accounts with sufficient funds")
-        return None
     
     def check_webull_day_trades(self, symbol: str, action: str) -> bool:
         """Check Webull's actual trading history for day trade prevention"""
@@ -735,8 +786,13 @@ class EnhancedWyckoffTradingBot:
     
     def execute_stop_loss_sell(self, symbol: str, shares: float, current_price: float, 
                               reason: str, account=None) -> bool:
-        """Execute a stop loss sell order"""
+        """Execute a stop loss sell order with session validation"""
         try:
+            # Validate session before trading
+            if not self.validate_and_refresh_session():
+                self.logger.error(f"❌ Session validation failed for {symbol} stop loss")
+                return False
+            
             # If no account specified, find the account that holds this position
             if account is None:
                 position = self.database.get_position(symbol)
@@ -806,6 +862,12 @@ class EnhancedWyckoffTradingBot:
                 return True
             else:
                 error_msg = order_result.get('msg', 'Unknown error')
+                if 'expired' in error_msg.lower() or 'login' in error_msg.lower():
+                    self.logger.warning(f"⚠️ Session expired during {symbol} stop loss, retrying...")
+                    # Try once more with fresh session
+                    if self.full_reauthentication():
+                        return self.execute_stop_loss_sell(symbol, shares, current_price, reason, account)
+                
                 self.logger.error(f"❌ Stop loss order failed for {symbol}: {error_msg}")
                 return False
                 
@@ -876,8 +938,13 @@ class EnhancedWyckoffTradingBot:
         return positions
     
     def execute_buy_order(self, signal: WyckoffSignal, account, dynamic_trade_amount: float = None) -> bool:
-        """Execute a buy order with stop loss creation"""
+        """Execute a buy order with session validation and stop loss creation"""
         try:
+            # Validate session before trading
+            if not self.validate_and_refresh_session():
+                self.logger.error(f"❌ Session validation failed for {signal.symbol} buy order")
+                return False
+            
             # Use provided dynamic trade amount or calculate it
             trade_amount = dynamic_trade_amount or self.get_dynamic_trade_amount(account.settled_funds)
             
@@ -959,6 +1026,12 @@ class EnhancedWyckoffTradingBot:
                 return True
             else:
                 error_msg = order_result.get('msg', 'Unknown error')
+                if 'expired' in error_msg.lower() or 'login' in error_msg.lower():
+                    self.logger.warning(f"⚠️ Session expired during {signal.symbol} buy, retrying...")
+                    # Try once more with fresh session
+                    if self.full_reauthentication():
+                        return self.execute_buy_order(signal, account, dynamic_trade_amount)
+                
                 self.logger.error(f"❌ Buy order failed for {signal.symbol}: {error_msg}")
                 return False
                 
@@ -967,8 +1040,13 @@ class EnhancedWyckoffTradingBot:
             return False
     
     def execute_sell_order(self, signal: WyckoffSignal, position: Dict, account=None) -> bool:
-        """Execute a sell order for entire position"""
+        """Execute a sell order for entire position with session validation"""
         try:
+            # Validate session before trading
+            if not self.validate_and_refresh_session():
+                self.logger.error(f"❌ Session validation failed for {signal.symbol} sell order")
+                return False
+            
             # If no account specified, find the account that holds this position
             if account is None:
                 target_account_type = position['account_type']
@@ -1040,6 +1118,12 @@ class EnhancedWyckoffTradingBot:
                 return True
             else:
                 error_msg = order_result.get('msg', 'Unknown error')
+                if 'expired' in error_msg.lower() or 'login' in error_msg.lower():
+                    self.logger.warning(f"⚠️ Session expired during {signal.symbol} sell, retrying...")
+                    # Try once more with fresh session
+                    if self.full_reauthentication():
+                        return self.execute_sell_order(signal, position, account)
+                
                 self.logger.error(f"❌ Sell order failed for {signal.symbol}: {error_msg}")
                 return False
                 
@@ -1048,12 +1132,18 @@ class EnhancedWyckoffTradingBot:
             return False
     
     def run_trading_cycle(self) -> Tuple[int, int]:
-        """Run one complete trading cycle with multi-account support"""
+        """Run one complete trading cycle with multi-account support and session validation"""
         trades_executed = 0
         stop_losses_executed = 0
         errors = 0
         
         try:
+            # Validate session at the start of trading cycle
+            self.logger.info("🔐 Validating trading session...")
+            if not self.validate_and_refresh_session():
+                self.logger.error("❌ Session validation failed at start of trading cycle")
+                return (0, 0), 1
+            
             # Get all enabled accounts
             enabled_accounts = self.get_enabled_accounts()
             if not enabled_accounts:
@@ -1193,7 +1283,7 @@ class EnhancedWyckoffTradingBot:
             return (trades_executed, stop_losses_executed), errors + 1
     
     def run(self) -> bool:
-        """Main bot execution"""
+        """Main bot execution with enhanced session management"""
         start_time = time.time()
         signals_found = 0
         trades_executed = 0
@@ -1202,7 +1292,7 @@ class EnhancedWyckoffTradingBot:
         log_details = ""
         
         try:
-            self.logger.info("🚀 Starting Enhanced Wyckoff Trading Bot with Dynamic Scaling")
+            self.logger.info("🚀 Starting Enhanced Wyckoff Trading Bot with Session Validation")
             
             # Initialize all systems
             if not self.initialize_systems():
@@ -1232,7 +1322,7 @@ class EnhancedWyckoffTradingBot:
             
             # Create summary
             account_summary = f"{len(enabled_accounts)} accounts" if len(enabled_accounts) > 1 else enabled_accounts[0].account_type if enabled_accounts else "None"
-            log_details = f"Execution time: {execution_time:.1f}s, Accounts: {account_summary}"
+            log_details = f"Execution time: {execution_time:.1f}s, Accounts: {account_summary}, Session validation: Enhanced"
             
             status = "SUCCESS" if errors == 0 else "SUCCESS_WITH_ERRORS" if (trades_executed + stop_losses_executed) > 0 else "FAILED"
             
@@ -1260,6 +1350,7 @@ class EnhancedWyckoffTradingBot:
             self.logger.info(f"   Balance Preserved: ${self.get_dynamic_min_balance(total_available_cash):.2f} minimum balance")
             self.logger.info(f"   Execution Time: {execution_time:.1f}s")
             self.logger.info(f"   Stop Strategy: Phase-based Wyckoff method")
+            self.logger.info(f"   Session Management: Enhanced with validation")
             self.logger.info(f"   Accounts Used: {len(enabled_accounts)} ({', '.join(acc.account_type for acc in enabled_accounts)})")
             
             if (trades_executed + stop_losses_executed) > 0:
@@ -1286,8 +1377,8 @@ class EnhancedWyckoffTradingBot:
 
 
 def main():
-    """Main entry point for the enhanced trading bot with dynamic scaling"""
-    print("🤖 Enhanced Wyckoff Trading Bot with Dynamic Scaling Starting...")
+    """Main entry point for the enhanced trading bot with session validation"""
+    print("🤖 Enhanced Wyckoff Trading Bot with Session Validation Starting...")
     
     bot = EnhancedWyckoffTradingBot()
     success = bot.run()
