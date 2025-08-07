@@ -377,7 +377,7 @@ class EnhancedWyckoffTradingBot:
         
         # Scaling tiers for position sizing
         self.position_scaling_tiers = [
-            {'min_cash': 0, 'trade_amount': 5.00},       # $5 for $0-199
+            {'min_cash': 0, 'trade_amount': 5.50},       # $5.50 for $0-199
             {'min_cash': 300, 'trade_amount': 10.00},    # $10 for $200-499
             {'min_cash': 600, 'trade_amount': 15.00},    # $15 for $500-999
             {'min_cash': 1000, 'trade_amount': 25.00},   # $25 for $1000-1999
