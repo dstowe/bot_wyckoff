@@ -580,6 +580,85 @@ class EnhancedFractionalTradingBot:
         self.logger.info(f"📝 Log: {log_filename.name}")
         self.logger.info("📊 Features: Position Building | Fractional Shares | Scaling Out")
     
+    def validate_and_refresh_session(self) -> bool:
+        """Validate session and refresh trade token if needed"""
+        try:
+            wb = self.main_system.wb
+            
+            # Test if we can make a basic API call
+            try:
+                account_info = wb.get_account()
+                if not account_info:
+                    self.logger.warning("⚠️ Basic session test failed")
+                    return self.full_reauthentication()
+            except Exception as e:
+                self.logger.warning(f"⚠️ Session validation failed: {e}")
+                return self.full_reauthentication()
+            
+            # Test if trade token is valid
+            try:
+                wb.get_current_orders()
+                self.logger.debug("✅ Trade token validation passed")
+                return True
+            except Exception as e:
+                error_msg = str(e).lower()
+                if 'expired' in error_msg or 'login' in error_msg:
+                    self.logger.warning("⚠️ Trade token expired, attempting refresh...")
+                    return self.refresh_trade_token()
+                else:
+                    self.logger.warning(f"⚠️ Trade token test failed: {e}")
+                    return self.refresh_trade_token()
+                    
+        except Exception as e:
+            self.logger.error(f"❌ Session validation error: {e}")
+            return False
+    
+    def refresh_trade_token(self) -> bool:
+        """Refresh the trade token"""
+        try:
+            self.logger.info("🔄 Refreshing trade token...")
+            
+            # Load credentials
+            credentials = self.main_system.credential_manager.load_credentials()
+            
+            # Get new trade token
+            if self.main_system.wb.get_trade_token(credentials['trading_pin']):
+                self.logger.info("✅ Trade token refreshed successfully")
+                
+                # Save the updated session
+                self.main_system.session_manager.save_session(self.main_system.wb)
+                return True
+            else:
+                self.logger.error("❌ Failed to refresh trade token")
+                return self.full_reauthentication()
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error refreshing trade token: {e}")
+            return self.full_reauthentication()
+    
+    def full_reauthentication(self) -> bool:
+        """Perform full reauthentication when session can't be refreshed"""
+        try:
+            self.logger.warning("🔄 Session expired, performing full reauthentication...")
+            
+            # Clear existing session
+            self.main_system.session_manager.clear_session()
+            
+            # Perform fresh login
+            if self.main_system.login_manager.login_automatically():
+                self.logger.info("✅ Full reauthentication successful")
+                
+                # Save new session
+                self.main_system.session_manager.save_session(self.main_system.wb)
+                return True
+            else:
+                self.logger.error("❌ Full reauthentication failed")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"❌ Full reauthentication error: {e}")
+            return False
+    
     def initialize_systems(self) -> bool:
         """Initialize all systems including fractional position manager"""
         try:
@@ -615,6 +694,12 @@ class EnhancedFractionalTradingBot:
         try:
             self.logger.info("🔄 Starting fractional position building cycle...")
             
+            # Validate session at the start of trading cycle
+            self.logger.info("🔐 Validating trading session...")
+            if not self.validate_and_refresh_session():
+                self.logger.error("❌ Session validation failed at start of trading cycle")
+                return 0, 0, 1
+            
             # Get enabled accounts
             enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
             if not enabled_accounts:
@@ -632,14 +717,12 @@ class EnhancedFractionalTradingBot:
             scaling_opportunities = self.position_manager.check_scaling_out_opportunities(self.main_system.wb)
             
             for opportunity in scaling_opportunities[:5]:  # Limit to 5 scaling actions per run
-                if self.position_manager.execute_partial_sale(
+                if self.execute_partial_sale_with_validation(
                     symbol=opportunity['symbol'],
                     shares_to_sell=opportunity['shares_to_sell'],
                     current_price=opportunity['current_price'],
                     reason=opportunity['reason'],
-                    description=opportunity['description'],
-                    wb_client=self.main_system.wb,
-                    account_manager=self.main_system.account_manager
+                    description=opportunity['description']
                 ):
                     scaling_actions += 1
                 else:
@@ -694,10 +777,127 @@ class EnhancedFractionalTradingBot:
             self.logger.error(f"❌ Error in fractional trading cycle: {e}")
             return trades_executed, scaling_actions, errors + 1
     
+    def execute_partial_sale_with_validation(self, symbol: str, shares_to_sell: float, 
+                                           current_price: float, reason: str, description: str) -> bool:
+        """Execute a partial sale (scaling out) with session validation"""
+        try:
+            # Validate session before trading
+            if not self.validate_and_refresh_session():
+                self.logger.error(f"❌ Session validation failed for {symbol} partial sale")
+                return False
+            
+            # Get position to find the right account
+            position = self.position_manager.get_enhanced_position(symbol)
+            if not position:
+                self.logger.error(f"❌ No position found for {symbol}")
+                return False
+            
+            # Find the account that holds this position
+            enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
+            target_account = next((acc for acc in enabled_accounts 
+                                 if acc.account_type == position['account_type']), None)
+            
+            if not target_account:
+                self.logger.error(f"❌ Could not find account for {symbol}")
+                return False
+            
+            # Switch to the trading account
+            if not self.main_system.account_manager.switch_to_account(target_account):
+                self.logger.error(f"❌ Failed to switch to account for {symbol}")
+                return False
+            
+            self.logger.info(f"💰 Scaling Out: Selling {shares_to_sell:.5f} shares of {symbol} - {description}")
+            
+            # Place market sell order
+            order_result = self.main_system.wb.place_order(
+                stock=symbol,
+                price=0,  # Market price
+                action='SELL',
+                orderType='MKT',
+                enforce='DAY',
+                quant=shares_to_sell,
+                outsideRegularTradingHour=False
+            )
+            
+            if order_result.get('success', False):
+                order_id = order_result.get('orderId', 'UNKNOWN')
+                remaining_shares = position['total_shares'] - shares_to_sell
+                
+                # Calculate profit
+                profit_per_share = current_price - position['avg_cost']
+                profit_amount = profit_per_share * shares_to_sell
+                gain_pct = profit_per_share / position['avg_cost']
+                
+                # Log partial sale
+                today = datetime.now().strftime('%Y-%m-%d')
+                with sqlite3.connect(self.database.db_path) as conn:
+                    conn.execute('''
+                        INSERT INTO partial_sales (
+                            symbol, sale_date, shares_sold, sale_price, sale_reason,
+                            remaining_shares, gain_pct, profit_amount, bot_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        symbol, today, shares_to_sell, current_price, reason,
+                        remaining_shares, gain_pct, profit_amount, self.database.bot_id
+                    ))
+                    
+                    # Update position
+                    new_invested = remaining_shares * position['avg_cost']
+                    new_allocation_pct = new_invested / position['target_position_size'] if position['target_position_size'] > 0 else 0
+                    
+                    if remaining_shares > 0:
+                        conn.execute('''
+                            UPDATE positions_enhanced
+                            SET total_shares = ?, total_invested = ?, current_allocation_pct = ?,
+                                position_status = 'SCALING_OUT', updated_at = CURRENT_TIMESTAMP
+                            WHERE symbol = ? AND bot_id = ?
+                        ''', (remaining_shares, new_invested, new_allocation_pct, symbol, self.database.bot_id))
+                    else:
+                        # Position completely closed
+                        conn.execute('''
+                            DELETE FROM positions_enhanced
+                            WHERE symbol = ? AND bot_id = ?
+                        ''', (symbol, self.database.bot_id))
+                    
+                    # Log position event
+                    conn.execute('''
+                        INSERT INTO position_events (
+                            symbol, event_type, event_date, wyckoff_phase, shares_traded, price,
+                            allocation_before, allocation_after, reasoning, bot_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        symbol, 'PARTIAL_SALE', today, 'SCALING_OUT', -shares_to_sell, current_price,
+                        position['current_allocation_pct'], new_allocation_pct,
+                        f"Scaled out {shares_to_sell:.5f} shares: {description}", self.database.bot_id
+                    ))
+                
+                self.logger.info(f"✅ Partial sale executed: {symbol} - Order ID: {order_id}")
+                self.logger.info(f"💰 Profit realized: ${profit_amount:.2f} ({gain_pct*100:.1f}% gain)")
+                
+                return True
+            else:
+                error_msg = order_result.get('msg', 'Unknown error')
+                if 'expired' in error_msg.lower() or 'login' in error_msg.lower():
+                    self.logger.warning(f"⚠️ Session expired during {symbol} partial sale, retrying...")
+                    if self.full_reauthentication():
+                        return self.execute_partial_sale_with_validation(symbol, shares_to_sell, current_price, reason, description)
+                
+                self.logger.error(f"❌ Partial sale failed for {symbol}: {error_msg}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error executing partial sale for {symbol}: {e}")
+            return False
+    
     def execute_fractional_position_trade(self, signal: WyckoffSignal, enabled_accounts: List, 
                                         total_account_value: float) -> bool:
-        """Execute fractional position building trade"""
+        """Execute fractional position building trade with session validation"""
         try:
+            # Validate session before trading
+            if not self.validate_and_refresh_session():
+                self.logger.error(f"❌ Session validation failed for {signal.symbol} trade")
+                return False
+            
             # Determine trade amount based on addition info
             is_new_position = signal.addition_info['is_new_position']
             addition_pct = signal.addition_info['addition_pct']
@@ -799,6 +999,11 @@ class EnhancedFractionalTradingBot:
                 return True
             else:
                 error_msg = order_result.get('msg', 'Unknown error')
+                if 'expired' in error_msg.lower() or 'login' in error_msg.lower():
+                    self.logger.warning(f"⚠️ Session expired during {signal.symbol} trade, retrying...")
+                    if self.full_reauthentication():
+                        return self.execute_fractional_position_trade(signal, enabled_accounts, total_account_value)
+                
                 self.logger.error(f"❌ Trade failed for {signal.symbol}: {error_msg}")
                 return False
                 
