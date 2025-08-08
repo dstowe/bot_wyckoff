@@ -1,0 +1,7 @@
+2025-08-07 21:17:44,443 - INFO -    Enhanced tables exist: False
+2025-08-07 21:17:44,443 - INFO -    Existing positions: 28
+2025-08-07 21:17:44,443 - INFO -    Already migrated: 0
+2025-08-07 21:17:44,444 - INFO -    Migration needed: True
+2025-08-07 21:17:44,539 - INFO -    Original positions: 28
+2025-08-07 21:17:44,539 - INFO -    Migrated positions: 28
+2025-08-07 21:17:44,539 - INFO -    Total invested: $170.01

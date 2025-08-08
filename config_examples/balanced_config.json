@@ -1,0 +1,121 @@
+{
+  "name": "Balanced Fractional Building",
+  "description": "Balanced approach matching your original requirements",
+  "account_sizing": [
+    {
+      "min_account": 0,
+      "max_account": 500,
+      "entry_range": [
+        5,
+        15
+      ],
+      "max_additions": 3,
+      "min_balance_preserve": 50,
+      "description": "Small accounts - your original spec"
+    },
+    {
+      "min_account": 500,
+      "max_account": 1000,
+      "entry_range": [
+        10,
+        25
+      ],
+      "max_additions": 4,
+      "min_balance_preserve": 100,
+      "description": "Medium accounts - your original spec"
+    },
+    {
+      "min_account": 1000,
+      "max_account": 2000,
+      "entry_range": [
+        15,
+        35
+      ],
+      "max_additions": 5,
+      "min_balance_preserve": 150,
+      "description": "Larger accounts - your original spec"
+    },
+    {
+      "min_account": 2000,
+      "max_account": Infinity,
+      "entry_range": [
+        25,
+        50
+      ],
+      "max_additions": 6,
+      "min_balance_preserve": 200,
+      "description": "Large accounts - your original spec"
+    }
+  ],
+  "wyckoff_phases": {
+    "ST": {
+      "initial_allocation": 0.25,
+      "allow_additions": false,
+      "max_total_allocation": 0.25,
+      "description": "Testing phase - start small",
+      "risk_level": "HIGH"
+    },
+    "Creek": {
+      "initial_allocation": 0.0,
+      "allow_additions": false,
+      "max_total_allocation": 0.0,
+      "description": "Hold only - no additions",
+      "risk_level": "NEUTRAL"
+    },
+    "SOS": {
+      "initial_allocation": 0.5,
+      "allow_additions": true,
+      "max_total_allocation": 0.75,
+      "description": "Main position on breakout",
+      "risk_level": "MEDIUM"
+    },
+    "LPS": {
+      "initial_allocation": 0.25,
+      "allow_additions": true,
+      "max_total_allocation": 1.0,
+      "description": "Complete position on support test",
+      "risk_level": "LOW"
+    },
+    "BU": {
+      "initial_allocation": 0.25,
+      "allow_additions": true,
+      "max_total_allocation": 1.0,
+      "description": "Add on pullback bounce",
+      "risk_level": "MEDIUM"
+    }
+  },
+  "signal_thresholds": {
+    "min_strength": 0.4,
+    "min_volume_confirmation": true,
+    "min_wyckoff_score": 0.4,
+    "require_sector_strength": false
+  },
+  "scaling_out": {
+    "profit_targets": [
+      {
+        "gain_pct": 0.1,
+        "sell_pct": 0.25,
+        "description": "10% gain: Take 25% profit"
+      },
+      {
+        "gain_pct": 0.2,
+        "sell_pct": 0.25,
+        "description": "20% gain: Take another 25%"
+      },
+      {
+        "gain_pct": 0.35,
+        "sell_pct": 0.25,
+        "description": "35% gain: Take another 25%"
+      }
+    ],
+    "max_hold_period_days": 120,
+    "distribution_exit_pct": 1.0
+  },
+  "risk_management": {
+    "max_positions_total": 10,
+    "max_positions_building": 6,
+    "max_allocation_per_position": 0.2,
+    "max_daily_trades": 5,
+    "require_3_day_spacing": true
+  }
+}

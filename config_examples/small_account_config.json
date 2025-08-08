@@ -1,0 +1,121 @@
+{
+  "name": "Small Account Optimization",
+  "description": "Optimized for accounts under $1000 with fractional shares",
+  "account_sizing": [
+    {
+      "min_account": 0,
+      "max_account": 200,
+      "entry_range": [
+        2,
+        6
+      ],
+      "max_additions": 2,
+      "min_balance_preserve": 25,
+      "description": "Micro accounts - minimum viable"
+    },
+    {
+      "min_account": 200,
+      "max_account": 500,
+      "entry_range": [
+        4,
+        10
+      ],
+      "max_additions": 3,
+      "min_balance_preserve": 40,
+      "description": "Small accounts - careful growth"
+    },
+    {
+      "min_account": 500,
+      "max_account": 1000,
+      "entry_range": [
+        6,
+        18
+      ],
+      "max_additions": 4,
+      "min_balance_preserve": 60,
+      "description": "Medium-small accounts - steady building"
+    },
+    {
+      "min_account": 1000,
+      "max_account": Infinity,
+      "entry_range": [
+        10,
+        25
+      ],
+      "max_additions": 5,
+      "min_balance_preserve": 100,
+      "description": "Graduating to medium account"
+    }
+  ],
+  "wyckoff_phases": {
+    "ST": {
+      "initial_allocation": 0.3,
+      "allow_additions": false,
+      "max_total_allocation": 0.3,
+      "description": "Meaningful test for small accounts",
+      "risk_level": "HIGH"
+    },
+    "Creek": {
+      "initial_allocation": 0.0,
+      "allow_additions": false,
+      "max_total_allocation": 0.0,
+      "description": "No capital waste in consolidation",
+      "risk_level": "NEUTRAL"
+    },
+    "SOS": {
+      "initial_allocation": 0.45,
+      "allow_additions": true,
+      "max_total_allocation": 0.75,
+      "description": "Primary allocation on confirmation",
+      "risk_level": "MEDIUM"
+    },
+    "LPS": {
+      "initial_allocation": 0.25,
+      "allow_additions": true,
+      "max_total_allocation": 1.0,
+      "description": "Complete the position",
+      "risk_level": "LOW"
+    },
+    "BU": {
+      "initial_allocation": 0.2,
+      "allow_additions": true,
+      "max_total_allocation": 1.0,
+      "description": "Opportunistic addition",
+      "risk_level": "MEDIUM"
+    }
+  },
+  "signal_thresholds": {
+    "min_strength": 0.5,
+    "min_volume_confirmation": true,
+    "min_wyckoff_score": 0.4,
+    "require_sector_strength": false
+  },
+  "scaling_out": {
+    "profit_targets": [
+      {
+        "gain_pct": 0.15,
+        "sell_pct": 0.3,
+        "description": "15% gain: Take 30% profit"
+      },
+      {
+        "gain_pct": 0.3,
+        "sell_pct": 0.35,
+        "description": "30% gain: Take 35% more"
+      },
+      {
+        "gain_pct": 0.5,
+        "sell_pct": 0.35,
+        "description": "50% gain: Take 35% more"
+      }
+    ],
+    "max_hold_period_days": 60,
+    "distribution_exit_pct": 1.0
+  },
+  "risk_management": {
+    "max_positions_total": 6,
+    "max_positions_building": 3,
+    "max_allocation_per_position": 0.3,
+    "max_daily_trades": 2,
+    "require_3_day_spacing": true
+  }
+}

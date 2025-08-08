@@ -1,0 +1,121 @@
+{
+  "name": "Aggressive Fractional Building",
+  "description": "Higher risk, larger positions, more frequent trading",
+  "account_sizing": [
+    {
+      "min_account": 0,
+      "max_account": 500,
+      "entry_range": [
+        8,
+        20
+      ],
+      "max_additions": 4,
+      "min_balance_preserve": 25,
+      "description": "Micro accounts - aggressive sizing"
+    },
+    {
+      "min_account": 500,
+      "max_account": 1000,
+      "entry_range": [
+        15,
+        35
+      ],
+      "max_additions": 5,
+      "min_balance_preserve": 50,
+      "description": "Small accounts - growth focused"
+    },
+    {
+      "min_account": 1000,
+      "max_account": 2500,
+      "entry_range": [
+        25,
+        60
+      ],
+      "max_additions": 6,
+      "min_balance_preserve": 100,
+      "description": "Medium accounts - aggressive allocation"
+    },
+    {
+      "min_account": 2500,
+      "max_account": Infinity,
+      "entry_range": [
+        40,
+        100
+      ],
+      "max_additions": 8,
+      "min_balance_preserve": 200,
+      "description": "Large accounts - maximum growth"
+    }
+  ],
+  "wyckoff_phases": {
+    "ST": {
+      "initial_allocation": 0.35,
+      "allow_additions": false,
+      "max_total_allocation": 0.35,
+      "description": "Larger test position",
+      "risk_level": "HIGH"
+    },
+    "Creek": {
+      "initial_allocation": 0.15,
+      "allow_additions": true,
+      "max_total_allocation": 0.5,
+      "description": "Small adds in consolidation",
+      "risk_level": "NEUTRAL"
+    },
+    "SOS": {
+      "initial_allocation": 0.5,
+      "allow_additions": true,
+      "max_total_allocation": 0.85,
+      "description": "Heavy allocation on breakout",
+      "risk_level": "MEDIUM"
+    },
+    "LPS": {
+      "initial_allocation": 0.3,
+      "allow_additions": true,
+      "max_total_allocation": 1.15,
+      "description": "Over-allocate on strong support",
+      "risk_level": "LOW"
+    },
+    "BU": {
+      "initial_allocation": 0.35,
+      "allow_additions": true,
+      "max_total_allocation": 1.15,
+      "description": "Large bounce additions",
+      "risk_level": "MEDIUM"
+    }
+  },
+  "signal_thresholds": {
+    "min_strength": 0.3,
+    "min_volume_confirmation": false,
+    "min_wyckoff_score": 0.3,
+    "require_sector_strength": false
+  },
+  "scaling_out": {
+    "profit_targets": [
+      {
+        "gain_pct": 0.12,
+        "sell_pct": 0.2,
+        "description": "12% gain: Take 20% profit"
+      },
+      {
+        "gain_pct": 0.25,
+        "sell_pct": 0.25,
+        "description": "25% gain: Take 25% more"
+      },
+      {
+        "gain_pct": 0.5,
+        "sell_pct": 0.3,
+        "description": "50% gain: Take 30% more"
+      }
+    ],
+    "max_hold_period_days": 180,
+    "distribution_exit_pct": 1.0
+  },
+  "risk_management": {
+    "max_positions_total": 15,
+    "max_positions_building": 10,
+    "max_allocation_per_position": 0.25,
+    "max_daily_trades": 8,
+    "require_3_day_spacing": false
+  }
+}
