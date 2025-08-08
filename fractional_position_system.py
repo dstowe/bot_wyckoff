@@ -214,15 +214,22 @@ class FractionalPositionManager:
             # Calculate addition percentage
             if phase == 'SOS' and current_allocation < 0.75:
                 addition_pct = min(0.50, max_total - current_allocation)
-                return True, f"SOS_ADDITION_{addition_pct:.0%}", addition_pct
+                if addition_pct > 0.05:  # At least 5% addition
+                    return True, f"SOS_ADDITION_{addition_pct:.0%}", addition_pct
+                else:
+                    return False, "SOS_INSUFFICIENT_ROOM", 0.0
             elif phase == 'LPS' and current_allocation < 1.0:
                 addition_pct = min(0.25, 1.0 - current_allocation)
-                return True, f"LPS_COMPLETION_{addition_pct:.0%}", addition_pct
+                if addition_pct > 0.05:  # At least 5% addition
+                    return True, f"LPS_COMPLETION_{addition_pct:.0%}", addition_pct
+                else:
+                    return False, "LPS_INSUFFICIENT_ROOM", 0.0
             elif phase == 'BU' and wyckoff_score > 0.6:
                 addition_pct = min(0.25, max_total - current_allocation)
-                return True, f"BU_BOUNCE_{addition_pct:.0%}", addition_pct
-            
-            return False, "NO_ADDITION_CRITERIA", 0.0
+                if addition_pct > 0.05:  # At least 5% addition
+                    return True, f"BU_BOUNCE_{addition_pct:.0%}", addition_pct
+                else:
+                    return False, "BU_INSUFFICIENT_ROOM", 0.0
             
         except Exception as e:
             self.logger.error(f"Error checking position addition for {symbol}: {e}")

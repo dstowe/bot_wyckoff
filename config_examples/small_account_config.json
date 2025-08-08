@@ -37,7 +37,7 @@
     },
     {
       "min_account": 1000,
-      "max_account": Infinity,
+      "max_account": 100000000,
       "entry_range": [
         10,
         25
