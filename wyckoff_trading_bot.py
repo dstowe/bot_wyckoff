@@ -785,7 +785,7 @@ class EnhancedWyckoffTradingBot:
             return stop_losses_executed
     
     def execute_stop_loss_sell(self, symbol: str, shares: float, current_price: float, 
-                              reason: str, account=None) -> bool:
+                            reason: str, account=None) -> bool:
         """Execute a stop loss sell order with session validation"""
         try:
             # Validate session before trading
@@ -807,6 +807,9 @@ class EnhancedWyckoffTradingBot:
                 if not account:
                     self.logger.error(f"❌ Could not find account type {target_account_type} for {symbol}")
                     return False
+            
+            # GET POSITION INFO BEFORE UPDATING (for P&L calculation)
+            position_before_sale = self.database.get_position(symbol)
             
             # Switch to the trading account
             if not self.main_system.account_manager.switch_to_account(account):
@@ -844,20 +847,21 @@ class EnhancedWyckoffTradingBot:
                     order_id=order_id
                 )
                 
-                # Update position (set to zero)
+                # Calculate P&L BEFORE updating position (to avoid division by zero)
+                if position_before_sale and position_before_sale['total_invested'] > 0:
+                    profit_loss = (current_price - position_before_sale['avg_cost']) * shares
+                    profit_loss_pct = (profit_loss / position_before_sale['total_invested']) * 100
+                    self.logger.info(f"📊 Stop Loss P&L for {symbol}: ${profit_loss:.2f} ({profit_loss_pct:.1f}%)")
+                else:
+                    self.logger.warning(f"⚠️ Could not calculate P&L for {symbol} - missing position data")
+                
+                # Update position (set to zero) AFTER P&L calculation
                 self.database.update_position(
                     symbol=symbol,
                     shares=-shares,  # Negative to reduce position
                     cost=current_price,
                     account_type=account.account_type
                 )
-                
-                # Calculate P&L
-                position = self.database.get_position(symbol)
-                if position:
-                    profit_loss = (current_price - position['avg_cost']) * shares
-                    profit_loss_pct = (profit_loss / position['total_invested']) * 100
-                    self.logger.info(f"📊 Stop Loss P&L for {symbol}: ${profit_loss:.2f} ({profit_loss_pct:.1f}%)")
                 
                 return True
             else:
@@ -1098,7 +1102,15 @@ class EnhancedWyckoffTradingBot:
                     order_id=order_id
                 )
                 
-                # Update position (set to zero)
+                # Calculate P&L BEFORE updating position (to avoid division by zero)
+                if position.get('total_invested', 0) > 0:
+                    profit_loss = (current_price - position['avg_cost']) * shares_to_sell
+                    profit_loss_pct = (profit_loss / position['total_invested']) * 100
+                    self.logger.info(f"📊 Wyckoff Sell P&L for {signal.symbol}: ${profit_loss:.2f} ({profit_loss_pct:.1f}%)")
+                else:
+                    self.logger.warning(f"⚠️ Could not calculate P&L for {signal.symbol} - missing investment data")
+                
+                # Update position (set to zero) AFTER P&L calculation
                 self.database.update_position(
                     symbol=signal.symbol,
                     shares=-shares_to_sell,  # Negative to reduce position
@@ -1108,12 +1120,6 @@ class EnhancedWyckoffTradingBot:
                 
                 # Deactivate stop strategies
                 self.database.deactivate_stop_strategies(signal.symbol)
-                
-                # Calculate P&L
-                profit_loss = (current_price - position['avg_cost']) * shares_to_sell
-                profit_loss_pct = (profit_loss / position['total_invested']) * 100
-                
-                self.logger.info(f"📊 Wyckoff Sell P&L for {signal.symbol}: ${profit_loss:.2f} ({profit_loss_pct:.1f}%)")
                 
                 return True
             else:
