@@ -14,7 +14,7 @@
       "description": "Micro accounts - minimum viable"
     },
     {
-      "min_account": 200,
+      "min_account": 100,
       "max_account": 500,
       "entry_range": [
         4,

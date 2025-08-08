@@ -71,7 +71,7 @@ class FractionalPositionManager:
             {'min_account': 0, 'max_account': 500, 'entry_range': (5, 15), 'max_additions': 3},
             {'min_account': 500, 'max_account': 1000, 'entry_range': (10, 25), 'max_additions': 4},
             {'min_account': 1000, 'max_account': 2000, 'entry_range': (15, 35), 'max_additions': 5},
-            {'min_account': 2000, 'max_account': float('inf'), 'entry_range': (25, 50), 'max_additions': 6}
+            {'min_account': 2000, 'max_account': 100000000, 'entry_range': (25, 50), 'max_additions': 6}
         ]
         
         # Scaling out configuration
