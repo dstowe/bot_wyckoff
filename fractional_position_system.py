@@ -378,27 +378,19 @@ class SimplifiedFractionalTradingBot:
         self.setup_logging()
     
     def setup_logging(self):
-        """Setup logging"""
-        logs_dir = Path("logs")
-        logs_dir.mkdir(exist_ok=True)
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_filename = logs_dir / f"smart_fractional_bot_{timestamp}.log"
-        
+        """Setup logging to console only - no smart_fractional_bot_ log files"""
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             datefmt='%H:%M:%S',
             handlers=[
-                logging.FileHandler(log_filename, encoding='utf-8'),
-                logging.StreamHandler(sys.stdout)
+                logging.StreamHandler(sys.stdout)  # Console output only
             ],
             force=True
         )
         
         self.logger = logging.getLogger(__name__)
         self.logger.info("🚀 SMART FRACTIONAL TRADING BOT")
-        self.logger.info(f"📝 Log: {log_filename.name}")
         self.logger.info("💰 Dynamic account sizing based on real Webull values")
         self.logger.info("🎯 Wyckoff-based buying AND selling")
         self.logger.info("📈 Optimized for small account growth")
