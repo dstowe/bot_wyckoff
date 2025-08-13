@@ -104,17 +104,19 @@ class EnhancedTradingDatabase:
             # Enhanced positions table
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS positions (
-                    symbol TEXT PRIMARY KEY,
+                    -- CHANGE: Combined primary key
+                    symbol TEXT NOT NULL,
+                    account_type TEXT NOT NULL, 
                     total_shares REAL NOT NULL,
                     avg_cost REAL NOT NULL,
                     total_invested REAL NOT NULL,
                     first_purchase_date TEXT NOT NULL,
                     last_purchase_date TEXT NOT NULL,
-                    account_type TEXT NOT NULL,
                     entry_phase TEXT DEFAULT 'UNKNOWN',
                     entry_strength REAL DEFAULT 0.0,
                     bot_id TEXT DEFAULT 'enhanced_wyckoff_bot_v2',
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (symbol, account_type, bot_id) -- Ensures uniqueness per account
                 )
             ''')
             
@@ -233,16 +235,17 @@ class EnhancedTradingDatabase:
             ))
     
     def update_position(self, symbol: str, shares: float, cost: float, account_type: str, 
-                       entry_phase: str = None, entry_strength: float = None):
-        """Update position tracking with enhanced data"""
+                    entry_phase: str = None, entry_strength: float = None):
+        """Update position tracking with enhanced data for a specific account."""
         today = datetime.now().strftime('%Y-%m-%d')
         
         with sqlite3.connect(self.db_path) as conn:
+            # CHANGE: Use both symbol and account_type to find the record
             existing = conn.execute(
                 '''SELECT total_shares, avg_cost, total_invested, first_purchase_date, 
-                         entry_phase, entry_strength FROM positions 
-                   WHERE symbol = ? AND bot_id = ?''',
-                (symbol, self.bot_id)
+                        entry_phase, entry_strength FROM positions 
+                WHERE symbol = ? AND account_type = ? AND bot_id = ?''',
+                (symbol, account_type, self.bot_id)
             ).fetchone()
             
             if existing:
@@ -265,16 +268,17 @@ class EnhancedTradingDatabase:
                     SET total_shares = ?, avg_cost = ?, total_invested = ?, 
                         last_purchase_date = ?, entry_phase = ?, entry_strength = ?,
                         updated_at = CURRENT_TIMESTAMP
-                    WHERE symbol = ? AND bot_id = ?
-                ''', (new_shares, new_avg_cost, new_invested, today, use_phase, use_strength, symbol, self.bot_id))
+                    WHERE symbol = ? AND account_type = ? AND bot_id = ?
+                ''', (new_shares, new_avg_cost, new_invested, today, use_phase, use_strength, symbol, account_type, self.bot_id))
             else:
+                # CHANGE: The INSERT statement now includes account_type
                 conn.execute('''
-                    INSERT INTO positions (symbol, total_shares, avg_cost, total_invested, 
-                                         first_purchase_date, last_purchase_date, account_type, 
-                                         entry_phase, entry_strength, bot_id)
+                    INSERT INTO positions (symbol, account_type, total_shares, avg_cost, total_invested, 
+                                        first_purchase_date, last_purchase_date, 
+                                        entry_phase, entry_strength, bot_id)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (symbol, shares, cost, shares * cost, today, today, account_type, 
-                     entry_phase or 'UNKNOWN', entry_strength or 0.0, self.bot_id))
+                ''', (symbol, account_type, shares, cost, shares * cost, today, today,
+                    entry_phase or 'UNKNOWN', entry_strength or 0.0, self.bot_id))
     
     def log_partial_sale(self, symbol: str, shares_sold: float, sale_price: float, 
                         sale_reason: str, remaining_shares: float, gain_pct: float, 
@@ -889,103 +893,104 @@ class ComprehensiveExitManager:
         }
         
         try:
-            # Get real positions
+            # Get real positions from the broker, keyed by (symbol, account_type)
             enabled_accounts = account_manager.get_enabled_accounts()
             real_positions = {}
             
             for account in enabled_accounts:
                 for position in account.positions:
-                    symbol = position['symbol']
-                    if symbol not in real_positions:
-                        real_positions[symbol] = {'total_shares': 0, 'account_type': account.account_type}
-                    real_positions[symbol]['total_shares'] += position['quantity']
+                    
+                    # CHANGE: Use a tuple as the key
+                    position_key = (position['symbol'], account.account_type)
+                    real_positions[position_key] = {
+                        'total_shares': position['quantity'],
+                        'avg_cost': position['cost_price'] # Also grab the real cost
+                    }
+                   
             
-            # Get bot positions
+            # Get bot positions from the database
             bot_positions = self._get_all_bot_positions()
             
-            # Find discrepancies
-            all_symbols = set(real_positions.keys()) | set(bot_positions.keys())
+            # Find discrepancies by comparing the two sets of keys
+            all_position_keys = set(real_positions.keys()) | set(bot_positions.keys())
             
-            for symbol in all_symbols:
-                real_shares = real_positions.get(symbol, {'total_shares': 0})['total_shares']
-                bot_shares = bot_positions.get(symbol, {'total_shares': 0})['total_shares']
-                
+            for key in all_position_keys:
+                symbol, account_type = key
+                real_pos_data = real_positions.get(key, {'total_shares': 0, 'avg_cost': 0})
+                bot_pos_data = bot_positions.get(key, {'total_shares': 0, 'avg_cost': 0})
+
+                real_shares = real_pos_data['total_shares']
+                bot_shares = bot_pos_data['total_shares']
+                self._auto_correct_position(position['symbol'], account.account_type, real_shares, real_pos_data['avg_cost'])
+                # Correct discrepancies
                 if abs(real_shares - bot_shares) > 0.001:
                     discrepancy = {
                         'symbol': symbol,
+                        'account_type': account_type,
                         'real_shares': real_shares,
                         'bot_shares': bot_shares,
                         'difference': real_shares - bot_shares
                     }
                     reconciliation_report['discrepancies_found'].append(discrepancy)
                     
-                    if self._auto_correct_position(symbol, real_shares, bot_shares):
+                    # CHANGE: Pass account_type and real cost to the correction function
+                    if self._auto_correct_position(symbol, account_type, real_shares, real_pos_data['avg_cost']):
                         reconciliation_report['positions_corrected'] += 1
                 
                 reconciliation_report['positions_synced'] += 1
-            
+                
         except Exception as e:
             self.logger.error(f"Error during position reconciliation: {e}")
         
         return reconciliation_report
     
     def _get_all_bot_positions(self) -> Dict:
-        """Get all positions from bot database"""
+        """Get all positions from bot database, keyed by (symbol, account_type)"""
         positions = {}
         try:
             with sqlite3.connect(self.database.db_path) as conn:
                 results = conn.execute('''
-                    SELECT symbol, total_shares, avg_cost, total_invested, account_type
+                    SELECT symbol, account_type, total_shares, avg_cost, total_invested
                     FROM positions 
                     WHERE bot_id = ? AND total_shares > 0
                 ''', (self.database.bot_id,)).fetchall()
                 
-                for symbol, shares, avg_cost, invested, account_type in results:
-                    positions[symbol] = {
+                for symbol, account_type, shares, avg_cost, invested in results:
+                    # CHANGE: Use a tuple as the key
+                    positions[(symbol, account_type)] = {
                         'total_shares': shares,
                         'avg_cost': avg_cost,
                         'total_invested': invested,
-                        'account_type': account_type
                     }
         except Exception as e:
             self.logger.error(f"Error getting bot positions: {e}")
         
         return positions
     
-    def _auto_correct_position(self, symbol: str, real_shares: float, bot_shares: float) -> bool:
-        """Auto-correct position discrepancies"""
+    def _auto_correct_position(self, symbol: str, account_type: str, real_shares: float, real_avg_cost: float) -> bool:
+        """Auto-correct position discrepancies for a specific account."""
         try:
-            if real_shares == 0:
-                # Remove ghost position
-                with sqlite3.connect(self.database.db_path) as conn:
+            with sqlite3.connect(self.database.db_path) as conn:
+                if real_shares == 0:
+                    # Remove ghost position from the specific account
                     conn.execute('''
                         UPDATE positions 
-                        SET total_shares = 0, total_invested = 0, updated_at = CURRENT_TIMESTAMP
-                        WHERE symbol = ? AND bot_id = ?
-                    ''', (symbol, self.database.bot_id))
-                    
-                    conn.execute('''
-                        UPDATE stop_strategies 
-                        SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
-                        WHERE symbol = ? AND bot_id = ?
-                    ''', (symbol, self.database.bot_id))
-                
-                self.logger.info(f"Removed ghost position: {symbol}")
-                return True
-            else:
-                # Update shares count
-                with sqlite3.connect(self.database.db_path) as conn:
+                        SET total_shares = 0, total_invested = 0, avg_cost = 0, updated_at = CURRENT_TIMESTAMP
+                        WHERE symbol = ? AND account_type = ? AND bot_id = ?
+                    ''', (symbol, account_type, self.database.bot_id))
+                    self.logger.info(f"Removed ghost position: {symbol} from {account_type} account")
+                else:
+                    # Update shares and cost basis to match the broker
                     conn.execute('''
                         UPDATE positions 
-                        SET total_shares = ?, updated_at = CURRENT_TIMESTAMP
-                        WHERE symbol = ? AND bot_id = ?
-                    ''', (real_shares, symbol, self.database.bot_id))
-                
-                self.logger.info(f"Updated position shares: {symbol} to {real_shares}")
-                return True
+                        SET total_shares = ?, avg_cost = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE symbol = ? AND account_type = ? AND bot_id = ?
+                    ''', (real_shares, real_avg_cost, symbol, account_type, self.database.bot_id))
+                    self.logger.info(f"Corrected position: {symbol} in {account_type} to {real_shares} shares @ ${real_avg_cost:.2f}")
+            return True
                 
         except Exception as e:
-            self.logger.error(f"Error auto-correcting position {symbol}: {e}")
+            self.logger.error(f"Error auto-correcting position {symbol} in {account_type}: {e}")
             return False
     
     def run_comprehensive_analysis(self, wb_client, account_manager, current_positions: Dict) -> Dict:
