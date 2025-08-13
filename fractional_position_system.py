@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-COMPLETE ENHANCED FRACTIONAL POSITION BUILDING SYSTEM - FULL VERSION
+COMPLETE ENHANCED FRACTIONAL POSITION BUILDING SYSTEM - FIXED VERSION
 Integrates all advanced exit management, Wyckoff warnings, and portfolio protection
-This is the complete replacement for fractional_position_system.py with ALL features
+This is the complete replacement for fractional_position_system.py with ALL features FIXED
 """
 
 import sys
@@ -539,11 +539,11 @@ class EnhancedTradingDatabase:
         
         return False
     
-    def log_bot_run(self, signals_found: int, trades_executed: int, wyckoff_sells: int,
-                    profit_scales: int, emergency_exits: int, errors: int, 
-                    portfolio_value: float, available_cash: float, emergency_mode: bool,
-                    market_condition: str, portfolio_drawdown_pct: float,
-                    status: str, log_details: str):
+    def log_bot_run(self, signals_found: int, trades_executed: int, wyckoff_sells: int = 0,
+                    profit_scales: int = 0, emergency_exits: int = 0, errors: int = 0, 
+                    portfolio_value: float = 0, available_cash: float = 0, emergency_mode: bool = False,
+                    market_condition: str = "NORMAL", portfolio_drawdown_pct: float = 0.0,
+                    status: str = "COMPLETED", log_details: str = ""):
         """Log enhanced bot run statistics"""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute('''
@@ -561,7 +561,7 @@ class EnhancedTradingDatabase:
 
 
 class EnhancedWyckoffAnalyzer:
-    """Enhanced Wyckoff analyzer with advanced warning signals"""
+    """Enhanced Wyckoff analyzer with advanced warning signals - FIXED VERSION"""
     
     def __init__(self, logger):
         self.logger = logger
@@ -584,7 +584,7 @@ class EnhancedWyckoffAnalyzer:
                 self.logger.debug(f"Insufficient data for {actual_symbol} analysis")
                 return warnings
             
-            # 1. UTAD - Upthrust After Distribution
+            # 1. UTAD - Upthrust After Distribution - NOW IMPLEMENTED
             utad_signal = self._detect_utad(actual_symbol, data, current_price)
             if utad_signal:
                 warnings.append(utad_signal)
@@ -608,6 +608,50 @@ class EnhancedWyckoffAnalyzer:
             self.logger.error(f"Error analyzing warnings for {symbol}: {e}")
         
         return warnings
+    
+    def _detect_utad(self, symbol: str, data: pd.DataFrame, current_price: float) -> Optional[WyckoffWarningSignal]:
+        """FIXED: Detect Upthrust After Distribution (UTAD) pattern"""
+        if len(data) < 20:
+            return None
+        
+        try:
+            # Look for UTAD pattern: new high on lower volume followed by weakness
+            recent_data = data.tail(15)
+            high_20 = data['High'].tail(20).max()
+            is_near_high = current_price >= high_20 * 0.995
+            
+            if not is_near_high:
+                return None
+            
+            # Check for volume characteristics of UTAD
+            recent_volume = recent_data['Volume'].tail(5).mean()
+            earlier_volume = data['Volume'].tail(20).head(10).mean()
+            
+            # UTAD shows lower volume on new highs
+            if recent_volume < earlier_volume * 0.8:
+                # Check for subsequent weakness
+                last_5_close = recent_data['Close'].tail(5)
+                first_close = last_5_close.iloc[0]
+                last_close = last_5_close.iloc[-1]
+                
+                # Price should be declining after the high
+                if last_close < first_close * 0.98:
+                    strength = min(0.9, (earlier_volume / recent_volume - 1) * 0.5)
+                    
+                    return WyckoffWarningSignal(
+                        symbol=symbol,
+                        signal_type='UTAD',
+                        strength=strength,
+                        price=current_price,
+                        key_level=high_20,
+                        volume_data={'recent_vol': recent_volume, 'earlier_vol': earlier_volume},
+                        context=f"UTAD: New high on weak volume, subsequent decline",
+                        urgency='HIGH'
+                    )
+        except Exception as e:
+            self.logger.debug(f"UTAD detection error for {symbol}: {e}")
+        
+        return None
         
     def _detect_sow(self, symbol: str, data: pd.DataFrame, current_price: float) -> Optional[WyckoffWarningSignal]:
         """Detect Sign of Weakness"""
@@ -662,7 +706,7 @@ class EnhancedWyckoffAnalyzer:
                 return None
             
             recent_high_vol = high_days['Volume'].tail(2).mean()
-            earlier_high_vol = high_days['Volume'].head(-2).mean()
+            earlier_high_vol = high_days['Volume'].head(-2).mean() if len(high_days) > 2 else recent_high_vol
             
             if recent_high_vol < earlier_high_vol * 0.7:
                 divergence_strength = 1.0 - (recent_high_vol / earlier_high_vol)
@@ -1372,7 +1416,7 @@ class ComprehensiveExitManager:
 
 
 class EnhancedFractionalTradingBot:
-    """DEFINITIVE: Complete enhanced fractional trading bot with ALL features"""
+    """DEFINITIVE: Complete enhanced fractional trading bot with ALL features FIXED"""
     
     def __init__(self):
         self.logger = None
@@ -1573,7 +1617,7 @@ class EnhancedFractionalTradingBot:
         return False
     
     def _emergency_liquidate_position(self, symbol: str, position: Dict) -> bool:
-        """Emergency liquidation of single position"""
+        """Emergency liquidation of single position with fractional share handling"""
         try:
             enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
             account = next((acc for acc in enabled_accounts 
@@ -1582,45 +1626,99 @@ class EnhancedFractionalTradingBot:
             if not account or not self.main_system.account_manager.switch_to_account(account):
                 return False
             
-            shares_to_sell = position['shares']
+            total_shares_to_sell = position['shares']
             
-            self.logger.critical(f"🚨 EMERGENCY EXIT: {shares_to_sell:.5f} shares of {symbol}")
+            self.logger.critical(f"🚨 EMERGENCY EXIT: {total_shares_to_sell:.5f} shares of {symbol}")
             
-            order_result = self.main_system.wb.place_order(
-                stock=symbol,
-                price=0,
-                action='SELL',
-                orderType='MKT',
-                enforce='DAY',
-                quant=shares_to_sell,
-                outsideRegularTradingHour=False
-            )
+            # FIXED: Handle fractional share restrictions for emergency exits
+            orders_executed = 0
+            total_shares_sold = 0.0
             
-            if order_result.get('success', False):
-                order_id = order_result.get('orderId', 'EMERGENCY')
+            if total_shares_to_sell >= 1.0:
+                # Split into whole shares and fractional remainder
+                whole_shares = int(total_shares_to_sell)
+                fractional_remainder = total_shares_to_sell - whole_shares
                 
+                self.logger.critical(f"   Emergency split: {whole_shares} whole shares + {fractional_remainder:.5f} fractional")
+                
+                # Execute whole share orders first
+                for i in range(whole_shares):
+                    order_result = self.main_system.wb.place_order(
+                        stock=symbol,
+                        price=0,
+                        action='SELL',
+                        orderType='MKT',
+                        enforce='DAY',
+                        quant=1.0,
+                        outsideRegularTradingHour=False
+                    )
+                    
+                    if order_result.get('success', False):
+                        orders_executed += 1
+                        total_shares_sold += 1.0
+                        time.sleep(0.5)  # Brief delay
+                    else:
+                        self.logger.critical(f"   ❌ Emergency whole share order {i+1} failed")
+                        break
+                
+                # Execute fractional remainder
+                if fractional_remainder > 0.001:
+                    time.sleep(0.5)
+                    fractional_result = self.main_system.wb.place_order(
+                        stock=symbol,
+                        price=0,
+                        action='SELL',
+                        orderType='MKT',
+                        enforce='DAY',
+                        quant=fractional_remainder,
+                        outsideRegularTradingHour=False
+                    )
+                    
+                    if fractional_result.get('success', False):
+                        orders_executed += 1
+                        total_shares_sold += fractional_remainder
+            else:
+                # Single fractional order
+                order_result = self.main_system.wb.place_order(
+                    stock=symbol,
+                    price=0,
+                    action='SELL',
+                    orderType='MKT',
+                    enforce='DAY',
+                    quant=total_shares_to_sell,
+                    outsideRegularTradingHour=False
+                )
+                
+                if order_result.get('success', False):
+                    orders_executed = 1
+                    total_shares_sold = total_shares_to_sell
+            
+            if orders_executed > 0:
                 self.database.log_trade(
                     symbol=symbol,
                     action='EMERGENCY_SELL',
-                    quantity=shares_to_sell,
+                    quantity=total_shares_sold,
                     price=0,
                     signal_phase='EMERGENCY',
                     signal_strength=1.0,
                     account_type=account.account_type,
-                    order_id=order_id
+                    order_id=f"EMERGENCY_{orders_executed}_ORDERS"
                 )
                 
                 self.database.update_position(
                     symbol=symbol,
-                    shares=-shares_to_sell,
+                    shares=-total_shares_sold,
                     cost=0,
                     account_type=account.account_type
                 )
                 
                 self.database.deactivate_stop_strategies(symbol)
                 
-                self.logger.critical(f"✅ Emergency exit executed: {symbol}")
+                self.logger.critical(f"✅ Emergency exit executed: {symbol} ({total_shares_sold:.5f} shares)")
                 return True
+            else:
+                self.logger.critical(f"❌ Emergency exit failed: {symbol}")
+                return False
             
         except Exception as e:
             self.logger.error(f"❌ Error in emergency liquidation for {symbol}: {e}")
@@ -1628,7 +1726,7 @@ class EnhancedFractionalTradingBot:
         return False
     
     def execute_wyckoff_warning_exit(self, warning: WyckoffWarningSignal, position: Dict) -> bool:
-        """Execute exit based on Wyckoff warning"""
+        """Execute exit based on Wyckoff warning with fractional share handling"""
         try:
             enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
             account = next((acc for acc in enabled_accounts 
@@ -1637,45 +1735,102 @@ class EnhancedFractionalTradingBot:
             if not account or not self.main_system.account_manager.switch_to_account(account):
                 return False
             
-            shares_to_sell = position['shares']
+            total_shares_to_sell = position['shares']
             
             self.logger.warning(f"🔴 Wyckoff Warning Exit: {warning.symbol}")
             self.logger.warning(f"   Signal: {warning.signal_type} (Strength: {warning.strength:.2f})")
             self.logger.warning(f"   Context: {warning.context}")
+            self.logger.warning(f"   Selling: {total_shares_to_sell:.5f} shares")
             
-            order_result = self.main_system.wb.place_order(
-                stock=warning.symbol,
-                price=0,
-                action='SELL',
-                orderType='MKT',
-                enforce='DAY',
-                quant=shares_to_sell,
-                outsideRegularTradingHour=False
-            )
+            # FIXED: Handle fractional share restrictions for Wyckoff exits
+            orders_executed = 0
+            total_shares_sold = 0.0
             
-            if order_result.get('success', False):
-                order_id = order_result.get('orderId', 'WARNING')
+            if total_shares_to_sell >= 1.0:
+                # Split into whole shares and fractional remainder
+                whole_shares = int(total_shares_to_sell)
+                fractional_remainder = total_shares_to_sell - whole_shares
                 
+                self.logger.warning(f"   Wyckoff split: {whole_shares} whole shares + {fractional_remainder:.5f} fractional")
+                
+                # Execute whole share orders
+                for i in range(whole_shares):
+                    order_result = self.main_system.wb.place_order(
+                        stock=warning.symbol,
+                        price=0,
+                        action='SELL',
+                        orderType='MKT',
+                        enforce='DAY',
+                        quant=1.0,
+                        outsideRegularTradingHour=False
+                    )
+                    
+                    if order_result.get('success', False):
+                        orders_executed += 1
+                        total_shares_sold += 1.0
+                        time.sleep(0.5)  # Brief delay
+                    else:
+                        self.logger.warning(f"   ❌ Wyckoff whole share order {i+1} failed")
+                        break
+                
+                # Execute fractional remainder
+                if fractional_remainder > 0.001:
+                    time.sleep(0.5)
+                    fractional_result = self.main_system.wb.place_order(
+                        stock=warning.symbol,
+                        price=0,
+                        action='SELL',
+                        orderType='MKT',
+                        enforce='DAY',
+                        quant=fractional_remainder,
+                        outsideRegularTradingHour=False
+                    )
+                    
+                    if fractional_result.get('success', False):
+                        orders_executed += 1
+                        total_shares_sold += fractional_remainder
+            else:
+                # Single fractional order
+                order_result = self.main_system.wb.place_order(
+                    stock=warning.symbol,
+                    price=0,
+                    action='SELL',
+                    orderType='MKT',
+                    enforce='DAY',
+                    quant=total_shares_to_sell,
+                    outsideRegularTradingHour=False
+                )
+                
+                if order_result.get('success', False):
+                    orders_executed = 1
+                    total_shares_sold = total_shares_to_sell
+            
+            if orders_executed > 0:
                 self.database.log_trade(
                     symbol=warning.symbol,
                     action='WYCKOFF_WARNING_SELL',
-                    quantity=shares_to_sell,
+                    quantity=total_shares_sold,
                     price=warning.price,
                     signal_phase=warning.signal_type,
                     signal_strength=warning.strength,
                     account_type=account.account_type,
-                    order_id=order_id
+                    order_id=f"WYCKOFF_{orders_executed}_ORDERS"
                 )
                 
                 self.database.update_position(
                     symbol=warning.symbol,
-                    shares=-shares_to_sell,
+                    shares=-total_shares_sold,
                     cost=warning.price,
                     account_type=account.account_type
                 )
                 
                 self.database.deactivate_stop_strategies(warning.symbol)
+                
+                self.logger.warning(f"✅ Wyckoff warning exit executed: {warning.symbol} ({total_shares_sold:.5f} shares)")
                 return True
+            else:
+                self.logger.error(f"❌ Wyckoff warning exit failed: {warning.symbol}")
+                return False
             
         except Exception as e:
             self.logger.error(f"❌ Error executing Wyckoff warning exit: {e}")
@@ -1721,7 +1876,7 @@ class EnhancedFractionalTradingBot:
         return None
     
     def execute_enhanced_profit_scaling(self, opportunity: Dict) -> bool:
-        """Execute profit scaling with enhanced tracking and session management"""
+        """Execute profit scaling with enhanced tracking and fractional share handling"""
         try:
             enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
             account = next((acc for acc in enabled_accounts 
@@ -1736,65 +1891,131 @@ class EnhancedFractionalTradingBot:
                 return False
             
             symbol = opportunity['symbol']
-            shares_to_sell = opportunity['shares_to_sell']
+            total_shares_to_sell = opportunity['shares_to_sell']
             
-            self.logger.info(f"💰 Enhanced Profit Scaling: {shares_to_sell:.5f} shares of {symbol}")
+            self.logger.info(f"💰 Enhanced Profit Scaling: {total_shares_to_sell:.5f} shares of {symbol}")
             self.logger.info(f"   {opportunity['description']} (${opportunity['profit_amount']:.2f} profit)")
             
-            order_result = self.main_system.wb.place_order(
-                stock=symbol,
-                price=0,
-                action='SELL',
-                orderType='MKT',
-                enforce='DAY',
-                quant=shares_to_sell,
-                outsideRegularTradingHour=False
-            )
+            # FIXED: Handle fractional share restrictions (orders must be < 1.0 shares for fractional)
+            orders_executed = 0
+            total_shares_sold = 0.0
             
-            if order_result.get('success', False):
-                order_id = order_result.get('orderId', 'SCALING')
+            if total_shares_to_sell >= 1.0:
+                # Split into whole shares and fractional remainder
+                whole_shares = int(total_shares_to_sell)
+                fractional_remainder = total_shares_to_sell - whole_shares
                 
-                # Enhanced tracking
+                self.logger.info(f"   Splitting order: {whole_shares} whole shares + {fractional_remainder:.5f} fractional")
+                
+                # Execute whole share orders (each as separate orders to avoid issues)
+                for i in range(whole_shares):
+                    order_result = self.main_system.wb.place_order(
+                        stock=symbol,
+                        price=0,
+                        action='SELL',
+                        orderType='MKT',
+                        enforce='DAY',
+                        quant=1.0,  # Exactly 1 whole share
+                        outsideRegularTradingHour=False
+                    )
+                    
+                    if order_result.get('success', False):
+                        orders_executed += 1
+                        total_shares_sold += 1.0
+                        self.logger.info(f"   ✅ Whole share order {i+1}/{whole_shares} executed")
+                        time.sleep(1)  # Brief delay between orders
+                    else:
+                        error_msg = order_result.get('msg', 'Unknown error')
+                        self.logger.warning(f"   ❌ Whole share order {i+1} failed: {error_msg}")
+                        break
+                
+                # Execute fractional remainder if any
+                if fractional_remainder > 0.001 and orders_executed > 0:  # Only if we have meaningful fractional amount
+                    time.sleep(1)  # Brief delay
+                    fractional_result = self.main_system.wb.place_order(
+                        stock=symbol,
+                        price=0,
+                        action='SELL',
+                        orderType='MKT',
+                        enforce='DAY',
+                        quant=fractional_remainder,
+                        outsideRegularTradingHour=False
+                    )
+                    
+                    if fractional_result.get('success', False):
+                        orders_executed += 1
+                        total_shares_sold += fractional_remainder
+                        self.logger.info(f"   ✅ Fractional order ({fractional_remainder:.5f}) executed")
+                    else:
+                        error_msg = fractional_result.get('msg', 'Unknown error')
+                        self.logger.warning(f"   ⚠️ Fractional order failed: {error_msg}")
+            
+            else:
+                # Total is less than 1 share, can place as single fractional order
+                order_result = self.main_system.wb.place_order(
+                    stock=symbol,
+                    price=0,
+                    action='SELL',
+                    orderType='MKT',
+                    enforce='DAY',
+                    quant=total_shares_to_sell,
+                    outsideRegularTradingHour=False
+                )
+                
+                if order_result.get('success', False):
+                    orders_executed = 1
+                    total_shares_sold = total_shares_to_sell
+                    self.logger.info(f"   ✅ Single fractional order executed")
+                else:
+                    error_msg = order_result.get('msg', 'Unknown error')
+                    self.logger.error(f"❌ Fractional profit scaling failed for {symbol}: {error_msg}")
+                    
+                    # Check if it's a session issue
+                    if 'session' in error_msg.lower() or 'expired' in error_msg.lower():
+                        self.logger.warning("⚠️ Session issue detected during profit scaling")
+                        self.main_system.session_manager.clear_session()
+                    
+                    return False
+            
+            # If we executed any orders successfully
+            if orders_executed > 0 and total_shares_sold > 0:
+                # Log successful trades - use the actual amount sold
+                actual_profit = (opportunity['current_price'] - opportunity.get('avg_cost', opportunity['current_price'] * 0.9)) * total_shares_sold
+                
                 self.database.log_trade(
                     symbol=symbol,
                     action='PROFIT_SCALING',
-                    quantity=shares_to_sell,
+                    quantity=total_shares_sold,
                     price=opportunity['current_price'],
                     signal_phase='PROFIT_SCALING',
                     signal_strength=opportunity['gain_pct'],
                     account_type=opportunity['account_type'],
-                    order_id=order_id
+                    order_id=f"SCALING_{orders_executed}_ORDERS"
                 )
                 
                 self.database.log_partial_sale(
                     symbol=symbol,
-                    shares_sold=shares_to_sell,
+                    shares_sold=total_shares_sold,
                     sale_price=opportunity['current_price'],
                     sale_reason=opportunity['reason'],
-                    remaining_shares=opportunity['remaining_shares'],
+                    remaining_shares=opportunity['remaining_shares'] + (total_shares_to_sell - total_shares_sold),
                     gain_pct=opportunity['gain_pct'],
-                    profit_amount=opportunity['profit_amount'],
+                    profit_amount=actual_profit,
                     scaling_level=opportunity['scaling_level']
                 )
                 
                 self.database.update_position(
                     symbol=symbol,
-                    shares=-shares_to_sell,
+                    shares=-total_shares_sold,
                     cost=opportunity['current_price'],
                     account_type=opportunity['account_type']
                 )
                 
                 self.logger.info(f"✅ Enhanced profit scaling executed: {symbol}")
+                self.logger.info(f"   Sold {total_shares_sold:.5f} of {total_shares_to_sell:.5f} shares in {orders_executed} order(s)")
                 return True
             else:
-                error_msg = order_result.get('msg', 'Unknown error')
-                self.logger.error(f"❌ Profit scaling failed for {symbol}: {error_msg}")
-                
-                # Check if it's a session issue
-                if 'session' in error_msg.lower() or 'expired' in error_msg.lower():
-                    self.logger.warning("⚠️ Session issue detected during profit scaling")
-                    self.main_system.session_manager.clear_session()
-                
+                self.logger.error(f"❌ No orders executed successfully for {symbol} profit scaling")
                 return False
             
         except Exception as e:
