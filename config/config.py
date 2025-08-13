@@ -31,7 +31,7 @@ class PersonalTradingConfig:
             'day_trading_enabled': True,
             'options_enabled': True,
             'max_position_size': 0.25,  # 25% of account
-            'min_trade_amount': 100,
+            'min_trade_amount': 5.00,
             'max_trade_amount': 10000,
             'pdt_protection': False
         },
@@ -40,7 +40,7 @@ class PersonalTradingConfig:
             'day_trading_enabled': True,
             'options_enabled': True,
             'max_position_size': 0.20,  # 20% of account
-            'min_trade_amount': 100,
+            'min_trade_amount': 5.00,
             'max_trade_amount': 15000,
             'pdt_protection': True,
             'min_account_value_for_pdt': 25000
@@ -68,7 +68,7 @@ class PersonalTradingConfig:
     # Position management
     MAX_POSITIONS_TOTAL = 10
     MAX_POSITION_VALUE_PERCENT = 0.25  # 25% of account
-    MIN_POSITION_VALUE = 100
+    MIN_POSITION_VALUE = 5.00
     
     # Gap trading parameters
     GAP_MIN_SIZE = 0.01  # 1% minimum gap

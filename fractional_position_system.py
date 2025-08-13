@@ -23,58 +23,61 @@ from config.config import PersonalTradingConfig
 
 
 class FractionalPositionManager:
-    """Manages fractional share position building across Wyckoff phases"""
+    """FIXED: Manages fractional share position building with $5 minimum compliance and enhanced validation"""
     
     def __init__(self, database, logger):
         self.database = database
         self.logger = logger
         
-        # Position building configuration by Wyckoff phase
+        # FIXED: Account sizing to ensure $5 minimum trades
+        self.account_sizing_config = [
+            {'min_account': 0, 'max_account': 200, 'entry_range': (5, 8), 'max_additions': 2, 'min_balance_preserve': 30},
+            {'min_account': 200, 'max_account': 500, 'entry_range': (6, 12), 'max_additions': 3, 'min_balance_preserve': 50},
+            {'min_account': 500, 'max_account': 1000, 'entry_range': (8, 20), 'max_additions': 4, 'min_balance_preserve': 75},
+            {'min_account': 1000, 'max_account': 2000, 'entry_range': (12, 30), 'max_additions': 5, 'min_balance_preserve': 100},
+            {'min_account': 2000, 'max_account': 100000000, 'entry_range': (15, 40), 'max_additions': 6, 'min_balance_preserve': 150}
+        ]
+        
+        # FIXED: Phase allocation to work with $5 minimum (increased percentages)
         self.phase_allocation_config = {
             'ST': {
-                'initial_allocation': 0.25,  # 25% of target position
-                'description': 'Testing phase - start small',
+                'initial_allocation': 0.80,  # INCREASED: 80% to ensure >$5 (was 25%)
+                'description': 'Testing phase - larger position due to $5 minimum',
                 'allow_additions': False,
+                'max_total_allocation': 0.80,
                 'risk_level': 'HIGH'
             },
             'Creek': {
                 'initial_allocation': 0.0,   # No new positions in consolidation
                 'description': 'Consolidation - hold only',
                 'allow_additions': False,
+                'max_total_allocation': 0.0,
                 'risk_level': 'NEUTRAL'
             },
             'SOS': {
-                'initial_allocation': 0.50,  # 50% of target (or add 50% to existing)
+                'initial_allocation': 0.70,  # INCREASED: 70% initial (was 50%)
                 'description': 'Breakout confirmation - main position',
                 'allow_additions': True,
-                'max_total_allocation': 0.75,
+                'max_total_allocation': 1.0,  # Allow completion to 100%
                 'risk_level': 'MEDIUM'
             },
             'LPS': {
-                'initial_allocation': 0.25,  # Final 25% (or add remaining)
-                'description': 'Support test confirmation - complete position',
+                'initial_allocation': 0.60,  # INCREASED: 60% (was 25%)
+                'description': 'Support test confirmation - larger position',
                 'allow_additions': True,
                 'max_total_allocation': 1.0,
                 'risk_level': 'LOW'
             },
             'BU': {
-                'initial_allocation': 0.25,  # Add to existing on pullback bounce
-                'description': 'Pullback bounce - opportunistic add',
+                'initial_allocation': 0.50,  # INCREASED: 50% (was 25%)
+                'description': 'Pullback bounce - meaningful add',
                 'allow_additions': True,
                 'max_total_allocation': 1.0,
                 'risk_level': 'MEDIUM'
             }
         }
         
-        # Account size-based position sizing
-        self.account_sizing_config = [
-            {'min_account': 0, 'max_account': 500, 'entry_range': (5, 15), 'max_additions': 3},
-            {'min_account': 500, 'max_account': 1000, 'entry_range': (10, 25), 'max_additions': 4},
-            {'min_account': 1000, 'max_account': 2000, 'entry_range': (15, 35), 'max_additions': 5},
-            {'min_account': 2000, 'max_account': 100000000, 'entry_range': (25, 50), 'max_additions': 6}
-        ]
-        
-        # Scaling out configuration
+        # Scaling out configuration (unchanged)
         self.scaling_out_config = {
             'profit_targets': [
                 {'gain_pct': 0.10, 'sell_pct': 0.25, 'description': '10% gain: Take 25% profit'},
@@ -83,7 +86,7 @@ class FractionalPositionManager:
             ],
             'distribution_signals': {
                 'phases': ['PS', 'SC'],
-                'sell_pct': 1.0,  # Sell remaining position
+                'sell_pct': 1.0,
                 'description': 'Distribution signal: Exit remaining position'
             }
         }
@@ -160,30 +163,51 @@ class FractionalPositionManager:
         """Get position sizing configuration based on account size"""
         for config in self.account_sizing_config:
             if config['min_account'] <= account_value < config['max_account']:
+                self.logger.debug(f"💰 Account ${account_value:.0f}: Using tier ${config['min_account']}-${config['max_account']} -> ${config['entry_range'][0]}-${config['entry_range'][1]}")
                 return config
         
         # Default to largest account config
         return self.account_sizing_config[-1]
     
     def calculate_target_position_size(self, account_value: float, wyckoff_score: float) -> float:
-        """Calculate target position size based on account value and Wyckoff score"""
+        """FIXED: Calculate target ensuring minimum $5 trades"""
         sizing_config = self.get_account_sizing_config(account_value)
         min_size, max_size = sizing_config['entry_range']
         
         # Adjust size based on Wyckoff score
         if wyckoff_score > 0.7:
-            target_size = max_size  # Full allocation for high-conviction signals
+            target_size = max_size
         elif wyckoff_score > 0.5:
-            target_size = min_size + (max_size - min_size) * 0.75  # 75% allocation
+            target_size = min_size + (max_size - min_size) * 0.75
         elif wyckoff_score > 0.4:
-            target_size = min_size + (max_size - min_size) * 0.50  # 50% allocation
+            target_size = min_size + (max_size - min_size) * 0.50
         else:
-            target_size = 0  # No position for low scores
+            target_size = min_size  # CHANGED: Use min_size instead of 0
+        
+        # ADDED: Ensure minimum target size for fractional trading
+        # With 80% allocation, we need at least $6.25 target to get $5 trade
+        if target_size < 6.25:
+            target_size = 6.25
+            self.logger.debug(f"💰 Adjusted target size to ${target_size:.2f} to ensure $5+ trades")
         
         return target_size
-    
+
+    def validate_trade_amount(self, trade_amount: float, symbol: str, phase: str) -> Tuple[bool, float]:
+        """ADDED: Validate and adjust trade amount for Webull's $5 minimum"""
+        min_required = 5.00
+        
+        if trade_amount < min_required:
+            self.logger.warning(f"⚠️ {symbol} ({phase}): Trade amount ${trade_amount:.2f} below $5 minimum")
+            
+            # Increase to minimum required
+            adjusted_amount = min_required
+            self.logger.info(f"💰 {symbol}: Adjusting trade amount to ${adjusted_amount:.2f} to meet minimum")
+            return True, adjusted_amount
+        
+        return True, trade_amount
+
     def should_add_to_position(self, symbol: str, phase: str, wyckoff_score: float) -> Tuple[bool, str, float]:
-        """Determine if we should add to an existing position"""
+        """ENHANCED: Position addition logic with $5 minimum consideration"""
         try:
             position = self.get_enhanced_position(symbol)
             if not position:
@@ -211,25 +235,53 @@ class FractionalPositionManager:
             if current_allocation >= max_total:
                 return False, "ALLOCATION_COMPLETE", 0.0
             
-            # Calculate addition percentage
-            if phase == 'SOS' and current_allocation < 0.75:
-                addition_pct = min(0.50, max_total - current_allocation)
-                if addition_pct > 0.05:  # At least 5% addition
-                    return True, f"SOS_ADDITION_{addition_pct:.0%}", addition_pct
+            # Calculate addition percentage with $5 minimum consideration
+            if phase == 'SOS' and current_allocation < max_total:
+                # For SOS, try to complete the position
+                addition_pct = max_total - current_allocation
+                potential_trade = position['target_position_size'] * addition_pct
+                
+                if potential_trade >= 5.0:
+                    return True, f"SOS_COMPLETION_{addition_pct:.0%}", addition_pct
                 else:
-                    return False, "SOS_INSUFFICIENT_ROOM", 0.0
-            elif phase == 'LPS' and current_allocation < 1.0:
-                addition_pct = min(0.25, 1.0 - current_allocation)
-                if addition_pct > 0.05:  # At least 5% addition
+                    # If addition would be <$5, force a $5 minimum addition
+                    min_addition_pct = 5.0 / position['target_position_size']
+                    if current_allocation + min_addition_pct <= 1.05:  # Allow slight overage
+                        return True, f"SOS_MIN_ADDITION_{min_addition_pct:.0%}", min_addition_pct
+                    else:
+                        return False, "SOS_INSUFFICIENT_ROOM", 0.0
+                        
+            elif phase == 'LPS' and current_allocation < max_total:
+                addition_pct = max_total - current_allocation
+                potential_trade = position['target_position_size'] * addition_pct
+                
+                if potential_trade >= 5.0:
                     return True, f"LPS_COMPLETION_{addition_pct:.0%}", addition_pct
                 else:
-                    return False, "LPS_INSUFFICIENT_ROOM", 0.0
+                    # Force minimum $5 addition if room allows
+                    min_addition_pct = 5.0 / position['target_position_size']
+                    if current_allocation + min_addition_pct <= 1.05:
+                        return True, f"LPS_MIN_ADDITION_{min_addition_pct:.0%}", min_addition_pct
+                    else:
+                        return False, "LPS_INSUFFICIENT_ROOM", 0.0
+                        
             elif phase == 'BU' and wyckoff_score > 0.6:
-                addition_pct = min(0.25, max_total - current_allocation)
-                if addition_pct > 0.05:  # At least 5% addition
+                # For BU, try standard addition but ensure $5 minimum
+                desired_addition = 0.30  # 30% addition for BU
+                addition_pct = min(desired_addition, max_total - current_allocation)
+                potential_trade = position['target_position_size'] * addition_pct
+                
+                if potential_trade >= 5.0:
                     return True, f"BU_BOUNCE_{addition_pct:.0%}", addition_pct
                 else:
-                    return False, "BU_INSUFFICIENT_ROOM", 0.0
+                    # Force minimum $5 addition if room allows
+                    min_addition_pct = 5.0 / position['target_position_size']
+                    if current_allocation + min_addition_pct <= max_total:
+                        return True, f"BU_MIN_ADDITION_{min_addition_pct:.0%}", min_addition_pct
+                    else:
+                        return False, "BU_INSUFFICIENT_ROOM", 0.0
+            
+            return False, "NO_VALID_ADDITION", 0.0
             
         except Exception as e:
             self.logger.error(f"Error checking position addition for {symbol}: {e}")
@@ -282,7 +334,7 @@ class FractionalPositionManager:
                     
                     # Update allocation percentage
                     new_allocation_pct = new_invested / existing_position['target_position_size']
-                    new_allocation_pct = min(new_allocation_pct, 1.0)  # Cap at 100%
+                    new_allocation_pct = min(new_allocation_pct, 1.05)  # Allow slight overage
                     
                     # Update entry phases
                     entry_phases = existing_position['entry_phases'].copy()
@@ -318,7 +370,7 @@ class FractionalPositionManager:
                         f"Added {shares_traded:.5f} shares in {phase} phase", self.database.bot_id
                     ))
                     
-                    self.logger.info(f"📈 Position Updated: {symbol} now {new_allocation_pct:.1%} of target")
+                    self.logger.info(f"📈 Position Updated: {symbol} now {new_allocation_pct:.1%} of target (${new_invested:.2f})")
                     
                 else:
                     # Create new position
@@ -361,7 +413,7 @@ class FractionalPositionManager:
                         self.database.bot_id
                     ))
                     
-                    self.logger.info(f"🎯 New Position: {symbol} target ${target_size:.2f}, started with {initial_allocation_pct:.1%}")
+                    self.logger.info(f"🎯 New Position: {symbol} target ${target_size:.2f}, started with {initial_allocation_pct:.1%} (${initial_invested:.2f})")
                 
                 return True
                 
@@ -404,16 +456,21 @@ class FractionalPositionManager:
                             if not self._already_scaled_at_level(symbol, target['gain_pct']):
                                 shares_to_sell = shares * target['sell_pct']
                                 
-                                scaling_opportunities.append({
-                                    'symbol': symbol,
-                                    'shares_to_sell': shares_to_sell,
-                                    'current_price': current_price,
-                                    'gain_pct': gain_pct,
-                                    'reason': f"PROFIT_{target['gain_pct']*100:.0f}PCT",
-                                    'description': target['description'],
-                                    'remaining_shares': shares - shares_to_sell
-                                })
-                                break  # Only one scaling action per position per run
+                                # ADDED: Ensure scaling meets minimum requirements
+                                sale_value = shares_to_sell * current_price
+                                if sale_value >= 5.0:  # Webull $5 minimum for sales too
+                                    scaling_opportunities.append({
+                                        'symbol': symbol,
+                                        'shares_to_sell': shares_to_sell,
+                                        'current_price': current_price,
+                                        'gain_pct': gain_pct,
+                                        'reason': f"PROFIT_{target['gain_pct']*100:.0f}PCT",
+                                        'description': target['description'],
+                                        'remaining_shares': shares - shares_to_sell
+                                    })
+                                    break  # Only one scaling action per position per run
+                                else:
+                                    self.logger.debug(f"💰 {symbol}: Scaling amount ${sale_value:.2f} below $5 minimum, skipping")
                 
                 except Exception as e:
                     self.logger.error(f"Error checking scaling for {symbol}: {e}")
@@ -437,106 +494,134 @@ class FractionalPositionManager:
     
     def execute_partial_sale(self, symbol: str, shares_to_sell: float, current_price: float,
                            reason: str, description: str, wb_client, account_manager) -> bool:
-        """Execute a partial sale (scaling out)"""
-        try:
-            # Get position to find the right account
-            position = self.get_enhanced_position(symbol)
-            if not position:
-                self.logger.error(f"❌ No position found for {symbol}")
-                return False
-            
-            # Find the account that holds this position
-            enabled_accounts = account_manager.get_enabled_accounts()
-            target_account = next((acc for acc in enabled_accounts 
-                                 if acc.account_type == position['account_type']), None)
-            
-            if not target_account:
-                self.logger.error(f"❌ Could not find account for {symbol}")
-                return False
-            
-            # Switch to the trading account
-            if not account_manager.switch_to_account(target_account):
-                self.logger.error(f"❌ Failed to switch to account for {symbol}")
-                return False
-            
-            self.logger.info(f"💰 Scaling Out: Selling {shares_to_sell:.5f} shares of {symbol} - {description}")
-            
-            # Place market sell order
-            order_result = wb_client.place_order(
-                stock=symbol,
-                price=0,  # Market price
-                action='SELL',
-                orderType='MKT',
-                enforce='DAY',
-                quant=shares_to_sell,
-                outsideRegularTradingHour=False
-            )
-            
-            if order_result.get('success', False):
-                order_id = order_result.get('orderId', 'UNKNOWN')
-                remaining_shares = position['total_shares'] - shares_to_sell
+        """Execute a partial sale (scaling out) with enhanced validation"""
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                # Get position to find the right account
+                position = self.get_enhanced_position(symbol)
+                if not position:
+                    self.logger.error(f"❌ No position found for {symbol}")
+                    return False
                 
-                # Calculate profit
-                profit_per_share = current_price - position['avg_cost']
-                profit_amount = profit_per_share * shares_to_sell
-                gain_pct = profit_per_share / position['avg_cost']
+                # Find the account that holds this position
+                enabled_accounts = account_manager.get_enabled_accounts()
+                target_account = next((acc for acc in enabled_accounts 
+                                     if acc.account_type == position['account_type']), None)
                 
-                # Log partial sale
-                today = datetime.now().strftime('%Y-%m-%d')
-                with sqlite3.connect(self.database.db_path) as conn:
-                    conn.execute('''
-                        INSERT INTO partial_sales (
-                            symbol, sale_date, shares_sold, sale_price, sale_reason,
-                            remaining_shares, gain_pct, profit_amount, bot_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        symbol, today, shares_to_sell, current_price, reason,
-                        remaining_shares, gain_pct, profit_amount, self.database.bot_id
-                    ))
+                if not target_account:
+                    self.logger.error(f"❌ Could not find account for {symbol}")
+                    return False
+                
+                # Switch to the trading account
+                if not account_manager.switch_to_account(target_account):
+                    self.logger.error(f"❌ Failed to switch to account for {symbol}")
+                    return False
+                
+                self.logger.info(f"💰 Scaling Out: Selling {shares_to_sell:.5f} shares of {symbol} - {description}")
+                
+                # Validate sale amount meets $5 minimum
+                sale_value = shares_to_sell * current_price
+                if sale_value < 5.0:
+                    self.logger.warning(f"⚠️ Sale value ${sale_value:.2f} below $5 minimum for {symbol}")
+                    # Adjust to minimum
+                    shares_to_sell = 5.0 / current_price
+                    sale_value = 5.0
+                    self.logger.info(f"💰 Adjusted to {shares_to_sell:.5f} shares (${sale_value:.2f})")
+                
+                # Place market sell order
+                order_result = wb_client.place_order(
+                    stock=symbol,
+                    price=0,  # Market price
+                    action='SELL',
+                    orderType='MKT',
+                    enforce='DAY',
+                    quant=shares_to_sell,
+                    outsideRegularTradingHour=False
+                )
+                
+                if order_result.get('success', False):
+                    order_id = order_result.get('orderId', 'UNKNOWN')
+                    remaining_shares = position['total_shares'] - shares_to_sell
                     
-                    # Update position
-                    new_invested = remaining_shares * position['avg_cost']
-                    new_allocation_pct = new_invested / position['target_position_size'] if position['target_position_size'] > 0 else 0
+                    # Calculate profit
+                    profit_per_share = current_price - position['avg_cost']
+                    profit_amount = profit_per_share * shares_to_sell
+                    gain_pct = profit_per_share / position['avg_cost']
                     
-                    if remaining_shares > 0:
+                    # Log partial sale
+                    today = datetime.now().strftime('%Y-%m-%d')
+                    with sqlite3.connect(self.database.db_path) as conn:
                         conn.execute('''
-                            UPDATE positions_enhanced
-                            SET total_shares = ?, total_invested = ?, current_allocation_pct = ?,
-                                position_status = 'SCALING_OUT', updated_at = CURRENT_TIMESTAMP
-                            WHERE symbol = ? AND bot_id = ?
-                        ''', (remaining_shares, new_invested, new_allocation_pct, symbol, self.database.bot_id))
-                    else:
-                        # Position completely closed
+                            INSERT INTO partial_sales (
+                                symbol, sale_date, shares_sold, sale_price, sale_reason,
+                                remaining_shares, gain_pct, profit_amount, bot_id
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            symbol, today, shares_to_sell, current_price, reason,
+                            remaining_shares, gain_pct, profit_amount, self.database.bot_id
+                        ))
+                        
+                        # Update position
+                        new_invested = remaining_shares * position['avg_cost']
+                        new_allocation_pct = new_invested / position['target_position_size'] if position['target_position_size'] > 0 else 0
+                        
+                        if remaining_shares > 0:
+                            conn.execute('''
+                                UPDATE positions_enhanced
+                                SET total_shares = ?, total_invested = ?, current_allocation_pct = ?,
+                                    position_status = 'SCALING_OUT', updated_at = CURRENT_TIMESTAMP
+                                WHERE symbol = ? AND bot_id = ?
+                            ''', (remaining_shares, new_invested, new_allocation_pct, symbol, self.database.bot_id))
+                        else:
+                            # Position completely closed
+                            conn.execute('''
+                                DELETE FROM positions_enhanced
+                                WHERE symbol = ? AND bot_id = ?
+                            ''', (symbol, self.database.bot_id))
+                        
+                        # Log position event
                         conn.execute('''
-                            DELETE FROM positions_enhanced
-                            WHERE symbol = ? AND bot_id = ?
-                        ''', (symbol, self.database.bot_id))
+                            INSERT INTO position_events (
+                                symbol, event_type, event_date, wyckoff_phase, shares_traded, price,
+                                allocation_before, allocation_after, reasoning, bot_id
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            symbol, 'PARTIAL_SALE', today, 'SCALING_OUT', -shares_to_sell, current_price,
+                            position['current_allocation_pct'], new_allocation_pct,
+                            f"Scaled out {shares_to_sell:.5f} shares: {description}", self.database.bot_id
+                        ))
                     
-                    # Log position event
-                    conn.execute('''
-                        INSERT INTO position_events (
-                            symbol, event_type, event_date, wyckoff_phase, shares_traded, price,
-                            allocation_before, allocation_after, reasoning, bot_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        symbol, 'PARTIAL_SALE', today, 'SCALING_OUT', -shares_to_sell, current_price,
-                        position['current_allocation_pct'], new_allocation_pct,
-                        f"Scaled out {shares_to_sell:.5f} shares: {description}", self.database.bot_id
-                    ))
-                
-                self.logger.info(f"✅ Partial sale executed: {symbol} - Order ID: {order_id}")
-                self.logger.info(f"💰 Profit realized: ${profit_amount:.2f} ({gain_pct*100:.1f}% gain)")
-                
-                return True
-            else:
-                error_msg = order_result.get('msg', 'Unknown error')
-                self.logger.error(f"❌ Partial sale failed for {symbol}: {error_msg}")
+                    self.logger.info(f"✅ Partial sale executed: {symbol} - Order ID: {order_id}")
+                    self.logger.info(f"💰 Profit realized: ${profit_amount:.2f} ({gain_pct*100:.1f}% gain)")
+                    
+                    return True
+                else:
+                    error_msg = order_result.get('msg', 'Unknown error')
+                    if 'expired' in error_msg.lower() or 'login' in error_msg.lower():
+                        self.logger.warning(f"⚠️ Session expired during {symbol} partial sale, will retry...")
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            import time
+                            time.sleep(3)
+                            continue
+                    
+                    self.logger.error(f"❌ Partial sale failed for {symbol}: {error_msg}")
+                    return False
+                    
+            except Exception as e:
+                self.logger.error(f"❌ Error executing partial sale for {symbol} (attempt {retry_count + 1}): {e}")
+                retry_count += 1
+                if retry_count < max_retries:
+                    import time
+                    time.sleep(5)
+                    continue
                 return False
-                
-        except Exception as e:
-            self.logger.error(f"❌ Error executing partial sale for {symbol}: {e}")
-            return False
-
+        
+        self.logger.error(f"❌ All {max_retries} attempts failed for {symbol} partial sale")
+        return False
 
 class EnhancedFractionalTradingBot:
     """Enhanced trading bot with fractional share position building and scaling"""
@@ -580,85 +665,6 @@ class EnhancedFractionalTradingBot:
         self.logger.info(f"📝 Log: {log_filename.name}")
         self.logger.info("📊 Features: Position Building | Fractional Shares | Scaling Out")
     
-    def validate_and_refresh_session(self) -> bool:
-        """Validate session and refresh trade token if needed"""
-        try:
-            wb = self.main_system.wb
-            
-            # Test if we can make a basic API call
-            try:
-                account_info = wb.get_account()
-                if not account_info:
-                    self.logger.warning("⚠️ Basic session test failed")
-                    return self.full_reauthentication()
-            except Exception as e:
-                self.logger.warning(f"⚠️ Session validation failed: {e}")
-                return self.full_reauthentication()
-            
-            # Test if trade token is valid
-            try:
-                wb.get_current_orders()
-                self.logger.debug("✅ Trade token validation passed")
-                return True
-            except Exception as e:
-                error_msg = str(e).lower()
-                if 'expired' in error_msg or 'login' in error_msg:
-                    self.logger.warning("⚠️ Trade token expired, attempting refresh...")
-                    return self.refresh_trade_token()
-                else:
-                    self.logger.warning(f"⚠️ Trade token test failed: {e}")
-                    return self.refresh_trade_token()
-                    
-        except Exception as e:
-            self.logger.error(f"❌ Session validation error: {e}")
-            return False
-    
-    def refresh_trade_token(self) -> bool:
-        """Refresh the trade token"""
-        try:
-            self.logger.info("🔄 Refreshing trade token...")
-            
-            # Load credentials
-            credentials = self.main_system.credential_manager.load_credentials()
-            
-            # Get new trade token
-            if self.main_system.wb.get_trade_token(credentials['trading_pin']):
-                self.logger.info("✅ Trade token refreshed successfully")
-                
-                # Save the updated session
-                self.main_system.session_manager.save_session(self.main_system.wb)
-                return True
-            else:
-                self.logger.error("❌ Failed to refresh trade token")
-                return self.full_reauthentication()
-                
-        except Exception as e:
-            self.logger.error(f"❌ Error refreshing trade token: {e}")
-            return self.full_reauthentication()
-    
-    def full_reauthentication(self) -> bool:
-        """Perform full reauthentication when session can't be refreshed"""
-        try:
-            self.logger.warning("🔄 Session expired, performing full reauthentication...")
-            
-            # Clear existing session
-            self.main_system.session_manager.clear_session()
-            
-            # Perform fresh login
-            if self.main_system.login_manager.login_automatically():
-                self.logger.info("✅ Full reauthentication successful")
-                
-                # Save new session
-                self.main_system.session_manager.save_session(self.main_system.wb)
-                return True
-            else:
-                self.logger.error("❌ Full reauthentication failed")
-                return False
-                
-        except Exception as e:
-            self.logger.error(f"❌ Full reauthentication error: {e}")
-            return False
-    
     def initialize_systems(self) -> bool:
         """Initialize all systems including fractional position manager"""
         try:
@@ -694,12 +700,6 @@ class EnhancedFractionalTradingBot:
         try:
             self.logger.info("🔄 Starting fractional position building cycle...")
             
-            # Validate session at the start of trading cycle
-            self.logger.info("🔐 Validating trading session...")
-            if not self.validate_and_refresh_session():
-                self.logger.error("❌ Session validation failed at start of trading cycle")
-                return 0, 0, 1
-            
             # Get enabled accounts
             enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
             if not enabled_accounts:
@@ -717,12 +717,14 @@ class EnhancedFractionalTradingBot:
             scaling_opportunities = self.position_manager.check_scaling_out_opportunities(self.main_system.wb)
             
             for opportunity in scaling_opportunities[:5]:  # Limit to 5 scaling actions per run
-                if self.execute_partial_sale_with_validation(
+                if self.position_manager.execute_partial_sale(
                     symbol=opportunity['symbol'],
                     shares_to_sell=opportunity['shares_to_sell'],
                     current_price=opportunity['current_price'],
                     reason=opportunity['reason'],
-                    description=opportunity['description']
+                    description=opportunity['description'],
+                    wb_client=self.main_system.wb,
+                    account_manager=self.main_system.account_manager
                 ):
                     scaling_actions += 1
                 else:
@@ -777,127 +779,10 @@ class EnhancedFractionalTradingBot:
             self.logger.error(f"❌ Error in fractional trading cycle: {e}")
             return trades_executed, scaling_actions, errors + 1
     
-    def execute_partial_sale_with_validation(self, symbol: str, shares_to_sell: float, 
-                                           current_price: float, reason: str, description: str) -> bool:
-        """Execute a partial sale (scaling out) with session validation"""
-        try:
-            # Validate session before trading
-            if not self.validate_and_refresh_session():
-                self.logger.error(f"❌ Session validation failed for {symbol} partial sale")
-                return False
-            
-            # Get position to find the right account
-            position = self.position_manager.get_enhanced_position(symbol)
-            if not position:
-                self.logger.error(f"❌ No position found for {symbol}")
-                return False
-            
-            # Find the account that holds this position
-            enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
-            target_account = next((acc for acc in enabled_accounts 
-                                 if acc.account_type == position['account_type']), None)
-            
-            if not target_account:
-                self.logger.error(f"❌ Could not find account for {symbol}")
-                return False
-            
-            # Switch to the trading account
-            if not self.main_system.account_manager.switch_to_account(target_account):
-                self.logger.error(f"❌ Failed to switch to account for {symbol}")
-                return False
-            
-            self.logger.info(f"💰 Scaling Out: Selling {shares_to_sell:.5f} shares of {symbol} - {description}")
-            
-            # Place market sell order
-            order_result = self.main_system.wb.place_order(
-                stock=symbol,
-                price=0,  # Market price
-                action='SELL',
-                orderType='MKT',
-                enforce='DAY',
-                quant=shares_to_sell,
-                outsideRegularTradingHour=False
-            )
-            
-            if order_result.get('success', False):
-                order_id = order_result.get('orderId', 'UNKNOWN')
-                remaining_shares = position['total_shares'] - shares_to_sell
-                
-                # Calculate profit
-                profit_per_share = current_price - position['avg_cost']
-                profit_amount = profit_per_share * shares_to_sell
-                gain_pct = profit_per_share / position['avg_cost']
-                
-                # Log partial sale
-                today = datetime.now().strftime('%Y-%m-%d')
-                with sqlite3.connect(self.database.db_path) as conn:
-                    conn.execute('''
-                        INSERT INTO partial_sales (
-                            symbol, sale_date, shares_sold, sale_price, sale_reason,
-                            remaining_shares, gain_pct, profit_amount, bot_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        symbol, today, shares_to_sell, current_price, reason,
-                        remaining_shares, gain_pct, profit_amount, self.database.bot_id
-                    ))
-                    
-                    # Update position
-                    new_invested = remaining_shares * position['avg_cost']
-                    new_allocation_pct = new_invested / position['target_position_size'] if position['target_position_size'] > 0 else 0
-                    
-                    if remaining_shares > 0:
-                        conn.execute('''
-                            UPDATE positions_enhanced
-                            SET total_shares = ?, total_invested = ?, current_allocation_pct = ?,
-                                position_status = 'SCALING_OUT', updated_at = CURRENT_TIMESTAMP
-                            WHERE symbol = ? AND bot_id = ?
-                        ''', (remaining_shares, new_invested, new_allocation_pct, symbol, self.database.bot_id))
-                    else:
-                        # Position completely closed
-                        conn.execute('''
-                            DELETE FROM positions_enhanced
-                            WHERE symbol = ? AND bot_id = ?
-                        ''', (symbol, self.database.bot_id))
-                    
-                    # Log position event
-                    conn.execute('''
-                        INSERT INTO position_events (
-                            symbol, event_type, event_date, wyckoff_phase, shares_traded, price,
-                            allocation_before, allocation_after, reasoning, bot_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        symbol, 'PARTIAL_SALE', today, 'SCALING_OUT', -shares_to_sell, current_price,
-                        position['current_allocation_pct'], new_allocation_pct,
-                        f"Scaled out {shares_to_sell:.5f} shares: {description}", self.database.bot_id
-                    ))
-                
-                self.logger.info(f"✅ Partial sale executed: {symbol} - Order ID: {order_id}")
-                self.logger.info(f"💰 Profit realized: ${profit_amount:.2f} ({gain_pct*100:.1f}% gain)")
-                
-                return True
-            else:
-                error_msg = order_result.get('msg', 'Unknown error')
-                if 'expired' in error_msg.lower() or 'login' in error_msg.lower():
-                    self.logger.warning(f"⚠️ Session expired during {symbol} partial sale, retrying...")
-                    if self.full_reauthentication():
-                        return self.execute_partial_sale_with_validation(symbol, shares_to_sell, current_price, reason, description)
-                
-                self.logger.error(f"❌ Partial sale failed for {symbol}: {error_msg}")
-                return False
-                
-        except Exception as e:
-            self.logger.error(f"❌ Error executing partial sale for {symbol}: {e}")
-            return False
-    
     def execute_fractional_position_trade(self, signal: WyckoffSignal, enabled_accounts: List, 
                                         total_account_value: float) -> bool:
-        """Execute fractional position building trade with session validation"""
+        """Execute fractional position building trade"""
         try:
-            # Validate session before trading
-            if not self.validate_and_refresh_session():
-                self.logger.error(f"❌ Session validation failed for {signal.symbol} trade")
-                return False
-            
             # Determine trade amount based on addition info
             is_new_position = signal.addition_info['is_new_position']
             addition_pct = signal.addition_info['addition_pct']
@@ -999,11 +884,6 @@ class EnhancedFractionalTradingBot:
                 return True
             else:
                 error_msg = order_result.get('msg', 'Unknown error')
-                if 'expired' in error_msg.lower() or 'login' in error_msg.lower():
-                    self.logger.warning(f"⚠️ Session expired during {signal.symbol} trade, retrying...")
-                    if self.full_reauthentication():
-                        return self.execute_fractional_position_trade(signal, enabled_accounts, total_account_value)
-                
                 self.logger.error(f"❌ Trade failed for {signal.symbol}: {error_msg}")
                 return False
                 
