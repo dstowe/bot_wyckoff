@@ -2,7 +2,7 @@
 """
 COMPLETE ENHANCED FRACTIONAL POSITION BUILDING SYSTEM - FIXED VERSION
 Integrates all advanced exit management, Wyckoff warnings, and portfolio protection
-This is the complete replacement for fractional_position_system.py with ALL features FIXED
+This is the complete replacement for fractional_position_system.py with ALL fixes applied
 """
 
 import sys
@@ -52,7 +52,7 @@ class PositionRisk:
 
 class EnhancedTradingDatabase:
     """
-    DEFINITIVE: Enhanced database manager with comprehensive tracking
+    DEFINITIVE: Enhanced database manager with comprehensive tracking - FIXED VERSION
     This is the single source of truth for all database operations
     """
     
@@ -261,8 +261,8 @@ class EnhancedTradingDatabase:
     def update_position(self, symbol: str, shares: float, cost: float, account_type: str, 
                        entry_phase: str = None, entry_strength: float = None):
         """
-        DEFINITIVE: Update position tracking with enhanced data for a specific account
-        Updates both positions and positions_enhanced tables
+        FIXED: Update position tracking with enhanced data for a specific account
+        Updates both positions and positions_enhanced tables with proper sync
         """
         today = datetime.now().strftime('%Y-%m-%d')
         
@@ -271,9 +271,9 @@ class EnhancedTradingDatabase:
             self._update_positions_table(conn, symbol, shares, cost, account_type, 
                                        entry_phase, entry_strength, today)
             
-            # Update enhanced positions table
-            self._update_positions_enhanced_table(conn, symbol, shares, cost, account_type, 
-                                                entry_phase, entry_strength, today)
+            # FIXED: Update enhanced positions table with proper sync
+            self._update_positions_enhanced_table_fixed(conn, symbol, shares, cost, account_type, 
+                                                      entry_phase, entry_strength, today)
     
     def _update_positions_table(self, conn, symbol: str, shares: float, cost: float, 
                               account_type: str, entry_phase: str, entry_strength: float, today: str):
@@ -319,8 +319,8 @@ class EnhancedTradingDatabase:
             ''', (symbol, account_type, shares, cost, shares * cost, today, today,
                 entry_phase or 'UNKNOWN', entry_strength or 0.0, self.bot_id))
     
-    def _update_positions_enhanced_table(self, conn, symbol: str, shares: float, cost: float, 
-                                    account_type: str, entry_phase: str, entry_strength: float, today: str):
+    def _update_positions_enhanced_table_fixed(self, conn, symbol: str, shares: float, cost: float, 
+                                             account_type: str, entry_phase: str, entry_strength: float, today: str):
         """FIXED: Enhanced positions table update with proper synchronization"""
         
         # Get current enhanced position if it exists
@@ -349,6 +349,7 @@ class EnhancedTradingDatabase:
                 use_phase = entry_phase or old_phase or 'UNKNOWN'
                 use_strength = entry_strength or old_strength or 0.0
             else:
+                # Position closed
                 new_invested = 0
                 new_avg_cost = 0
                 use_phase = old_phase
@@ -363,21 +364,22 @@ class EnhancedTradingDatabase:
                     updated_at = CURRENT_TIMESTAMP
                 WHERE symbol = ? AND account_type = ? AND bot_id = ?
             ''', (new_shares, new_avg_cost, new_invested, today, use_phase, use_strength,
-                old_size_pct or 0.1, time_held_days, old_vol or 0.5,
-                symbol, account_type, self.bot_id))
+                  old_size_pct or 0.1, time_held_days, old_vol or 0.5,
+                  symbol, account_type, self.bot_id))
+            
         else:
             # Insert new enhanced position - only if we're adding shares
             if shares > 0:
                 conn.execute('''
                     INSERT INTO positions_enhanced (symbol, account_type, total_shares, avg_cost, total_invested, 
-                                                first_purchase_date, last_purchase_date, 
-                                                entry_phase, entry_strength, position_size_pct,
-                                                time_held_days, volatility_percentile, bot_id)
+                                                  first_purchase_date, last_purchase_date, 
+                                                  entry_phase, entry_strength, position_size_pct,
+                                                  time_held_days, volatility_percentile, bot_id)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (symbol, account_type, shares, cost, shares * cost, today, today,
-                    entry_phase or 'UNKNOWN', entry_strength or 0.0, 0.1,
-                    0, 0.5, self.bot_id))
-        
+                      entry_phase or 'UNKNOWN', entry_strength or 0.0, 0.1,
+                      0, 0.5, self.bot_id))
+    
     def get_position(self, symbol: str, account_type: str = None) -> Optional[Dict]:
         """Get current position for a symbol in a specific account or all accounts"""
         with sqlite3.connect(self.db_path) as conn:
@@ -556,6 +558,60 @@ class EnhancedTradingDatabase:
                 errors, portfolio_value, available_cash, emergency_mode, market_condition,
                 portfolio_drawdown_pct, status, log_details, self.bot_id
             ))
+
+
+def manual_database_sync_fix():
+    """ADDED: Run this to manually fix any database sync issues"""
+    import sqlite3
+    from pathlib import Path
+    
+    db_path = Path("data/trading_bot.db")
+    bot_id = "enhanced_wyckoff_bot_v2"
+    
+    if not db_path.exists():
+        print("❌ Database not found")
+        return
+    
+    print("🔧 Fixing database synchronization issues...")
+    
+    with sqlite3.connect(db_path) as conn:
+        # Get all positions from main table
+        positions = conn.execute('''
+            SELECT symbol, account_type, total_shares, avg_cost, total_invested,
+                   first_purchase_date, last_purchase_date, entry_phase, entry_strength
+            FROM positions 
+            WHERE bot_id = ? AND total_shares > 0
+        ''', (bot_id,)).fetchall()
+        
+        print(f"📊 Found {len(positions)} positions to sync")
+        
+        for pos in positions:
+            symbol, account_type, shares, avg_cost, invested, first_date, last_date, phase, strength = pos
+            
+            # Calculate enhanced metrics
+            try:
+                first_dt = datetime.strptime(first_date, '%Y-%m-%d')
+                time_held = (datetime.now() - first_dt).days
+            except:
+                time_held = 0
+            
+            # Update or insert into enhanced table
+            conn.execute('''
+                INSERT OR REPLACE INTO positions_enhanced (
+                    symbol, account_type, total_shares, avg_cost, total_invested,
+                    first_purchase_date, last_purchase_date, entry_phase, 
+                    entry_strength, position_size_pct, time_held_days,
+                    volatility_percentile, bot_id, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                symbol, account_type, shares, avg_cost, invested,
+                first_date, last_date, phase or 'UNKNOWN', strength or 0.0,
+                0.1, time_held, 0.5, bot_id, datetime.now().isoformat()
+            ))
+            
+            print(f"✅ Synced: {symbol} ({account_type}) - {shares:.5f} shares")
+    
+    print("✅ Database sync complete!")
 
 
 class EnhancedWyckoffAnalyzer:
@@ -763,7 +819,7 @@ class EnhancedWyckoffAnalyzer:
 
 
 class DynamicAccountManager:
-    """Manages dynamic position sizing based on real account values"""
+    """FIXED: Manages dynamic position sizing based on real account values"""
     
     def __init__(self, logger):
         self.logger = logger
@@ -782,7 +838,8 @@ class DynamicAccountManager:
             
             self.logger.info(f"💰 Real Account Values - Total: ${total_value:.2f}, Cash: ${total_cash:.2f}")
             
-            config = self._calculate_dynamic_parameters(total_value, total_cash, enabled_accounts)
+            # FIXED: Use conservative parameters
+            config = self._calculate_conservative_parameters(total_value, total_cash, enabled_accounts)
             self.cached_config = config
             self.last_update = datetime.now()
             
@@ -792,13 +849,11 @@ class DynamicAccountManager:
             self.logger.error(f"❌ Error getting dynamic config: {e}")
             return self._get_fallback_config()
     
-    def _calculate_dynamic_parameters(self, total_value: float, total_cash: float, enabled_accounts: list) -> Dict:
+    def _calculate_conservative_parameters(self, total_value: float, total_cash: float, accounts: List) -> Dict:
         """FIXED: Calculate much more conservative parameters"""
         
-        num_accounts = len(enabled_accounts)
-
         # Find the account with the most cash for primary trading
-        max_cash_available = max(acc.settled_funds for acc in enabled_accounts) if enabled_accounts else total_cash
+        max_cash_available = max(acc.settled_funds for acc in accounts) if accounts else total_cash
         
         # FIXED: Much more conservative position sizing
         if total_cash < 100:
@@ -809,10 +864,14 @@ class DynamicAccountManager:
             base_position_pct = 0.10  # 10% of total cash
             max_positions = 3
             min_balance_pct = 0.30  # Keep 30% cash
-        else:
-            base_position_pct = 0.15  # 15% of total cash
+        elif total_cash < 500:
+            base_position_pct = 0.12  # 12% of total cash
             max_positions = 4
             min_balance_pct = 0.25  # Keep 25% cash
+        else:
+            base_position_pct = 0.15  # 15% of total cash
+            max_positions = 5
+            min_balance_pct = 0.20  # Keep 20% cash
         
         # FIXED: Calculate based on per-account maximum to prevent overdrafts
         base_position_size = min(
@@ -827,57 +886,65 @@ class DynamicAccountManager:
         if base_position_size < 5.0:
             base_position_size = min(5.0, total_cash * 0.3)
         
+        # FIXED: Much more conservative Wyckoff phases
         wyckoff_phases = {
-            'ST': {'initial_allocation': 0.60, 'allow_additions': False, 'max_total_allocation': 0.60},
-            'SOS': {'initial_allocation': 0.70, 'allow_additions': True, 'max_total_allocation': 1.0},
-            'LPS': {'initial_allocation': 0.50, 'allow_additions': True, 'max_total_allocation': 1.0},
-            'BU': {'initial_allocation': 0.40, 'allow_additions': True, 'max_total_allocation': 1.0},
+            'ST': {'initial_allocation': 0.40, 'allow_additions': False, 'max_total_allocation': 0.40},
+            'SOS': {'initial_allocation': 0.50, 'allow_additions': True, 'max_total_allocation': 0.80},
+            'LPS': {'initial_allocation': 0.35, 'allow_additions': True, 'max_total_allocation': 0.70},
+            'BU': {'initial_allocation': 0.30, 'allow_additions': True, 'max_total_allocation': 0.60},
             'Creek': {'initial_allocation': 0.0, 'allow_additions': False, 'max_total_allocation': 0.0}
         }
         
+        # FIXED: More conservative profit targets
         profit_targets = [
-            {'gain_pct': 0.08, 'sell_pct': 0.20, 'description': '8% gain: Take 20% profit'},
-            {'gain_pct': 0.15, 'sell_pct': 0.25, 'description': '15% gain: Take 25% more'},
-            {'gain_pct': 0.25, 'sell_pct': 0.30, 'description': '25% gain: Take 30% more'},
-            {'gain_pct': 0.40, 'sell_pct': 0.25, 'description': '40% gain: Take final 25%'}
+            {'gain_pct': 0.06, 'sell_pct': 0.15, 'description': '6% gain: Take 15% profit'},
+            {'gain_pct': 0.12, 'sell_pct': 0.20, 'description': '12% gain: Take 20% more'},
+            {'gain_pct': 0.20, 'sell_pct': 0.25, 'description': '20% gain: Take 25% more'},
+            {'gain_pct': 0.30, 'sell_pct': 0.40, 'description': '30% gain: Take final 40%'}
         ]
         
         return {
             'total_value': total_value,
             'total_cash': total_cash,
+            'max_cash_per_account': max_cash_available,
             'base_position_size': base_position_size,
             'base_position_pct': base_position_pct,
             'min_balance_preserve': min_balance_preserve,
             'max_positions': max_positions,
-            'num_accounts': num_accounts,
+            'num_accounts': len(accounts),
             'wyckoff_phases': wyckoff_phases,
             'profit_targets': profit_targets,
-            'calculated_at': datetime.now().isoformat()
+            'calculated_at': datetime.now().isoformat(),
+            # FIXED: Add per-account limits
+            'max_position_per_account': max_cash_available * 0.4,  # Max 40% of any account
+            'min_cash_buffer_per_account': 15.0  # Keep $15 minimum in each account
         }
     
     def _get_fallback_config(self) -> Dict:
-        """Fallback configuration"""
+        """FIXED: More conservative fallback configuration"""
         return {
-            'total_value': 300.0,
-            'total_cash': 300.0,
-            'base_position_size': 15.0,
-            'base_position_pct': 0.15,
-            'min_balance_preserve': 75.0,
-            'max_positions': 3,
+            'total_value': 100.0,
+            'total_cash': 100.0,
+            'base_position_size': 8.0,  # Much smaller
+            'base_position_pct': 0.08,
+            'min_balance_preserve': 40.0,
+            'max_positions': 2,
             'num_accounts': 2,
             'wyckoff_phases': {
-                'ST': {'initial_allocation': 0.60, 'allow_additions': False, 'max_total_allocation': 0.60},
-                'SOS': {'initial_allocation': 0.70, 'allow_additions': True, 'max_total_allocation': 1.0},
-                'LPS': {'initial_allocation': 0.50, 'allow_additions': True, 'max_total_allocation': 1.0},
-                'BU': {'initial_allocation': 0.40, 'allow_additions': True, 'max_total_allocation': 1.0},
+                'ST': {'initial_allocation': 0.40, 'allow_additions': False, 'max_total_allocation': 0.40},
+                'SOS': {'initial_allocation': 0.50, 'allow_additions': True, 'max_total_allocation': 0.80},
+                'LPS': {'initial_allocation': 0.35, 'allow_additions': True, 'max_total_allocation': 0.70},
+                'BU': {'initial_allocation': 0.30, 'allow_additions': True, 'max_total_allocation': 0.60},
                 'Creek': {'initial_allocation': 0.0, 'allow_additions': False, 'max_total_allocation': 0.0}
             },
             'profit_targets': [
-                {'gain_pct': 0.08, 'sell_pct': 0.20, 'description': '8% gain: Take 20% profit'},
-                {'gain_pct': 0.15, 'sell_pct': 0.25, 'description': '15% gain: Take 25% more'},
-                {'gain_pct': 0.25, 'sell_pct': 0.30, 'description': '25% gain: Take 30% more'}
+                {'gain_pct': 0.06, 'sell_pct': 0.15, 'description': '6% gain: Take 15% profit'},
+                {'gain_pct': 0.12, 'sell_pct': 0.20, 'description': '12% gain: Take 20% more'},
+                {'gain_pct': 0.20, 'sell_pct': 0.25, 'description': '20% gain: Take 25% more'}
             ],
-            'calculated_at': datetime.now().isoformat()
+            'calculated_at': datetime.now().isoformat(),
+            'max_position_per_account': 40.0,
+            'min_cash_buffer_per_account': 15.0
         }
 
 
@@ -901,10 +968,10 @@ class DynamicProfitTargetCalculator:
             account_size = market_data.get('account_value', 1000)
             
             base_targets = [
-                {'gain_pct': 0.08, 'sell_pct': 0.20},
-                {'gain_pct': 0.15, 'sell_pct': 0.25},
-                {'gain_pct': 0.25, 'sell_pct': 0.30},
-                {'gain_pct': 0.40, 'sell_pct': 0.25}
+                {'gain_pct': 0.06, 'sell_pct': 0.15},
+                {'gain_pct': 0.12, 'sell_pct': 0.20},
+                {'gain_pct': 0.20, 'sell_pct': 0.25},
+                {'gain_pct': 0.30, 'sell_pct': 0.40}
             ]
             
             # Phase multipliers
@@ -940,7 +1007,7 @@ class DynamicProfitTargetCalculator:
             for target in base_targets:
                 adjusted_target = {
                     'gain_pct': target['gain_pct'] * multiplier * volatility_adj,
-                    'sell_pct': target['sell_pct'] * time_adj,
+                    'sell_pct': target['sell_pct'] * time_adj * 0.8,  # FIXED: More conservative
                     'reasoning': f"Phase:{entry_phase}, Vol:{volatility:.2f}, Days:{time_held}"
                 }
                 dynamic_targets.append(adjusted_target)
@@ -1141,7 +1208,7 @@ class PortfolioRiskManager:
 
 
 class SmartFractionalPositionManager:
-    """Enhanced position manager with Wyckoff selling and dynamic sizing"""
+    """FIXED: Enhanced position manager with Wyckoff selling and dynamic sizing"""
     
     def __init__(self, database, dynamic_account_manager, logger):
         self.database = database
@@ -1155,7 +1222,7 @@ class SmartFractionalPositionManager:
         return self.current_config
     
     def get_position_size_for_signal(self, signal: WyckoffSignal, target_account) -> float:
-        """FIXED: Calculate position size with account-specific limits"""
+        """FIXED: Calculate position size with strict account-specific limits"""
         if not self.current_config:
             return 5.0  # Very conservative fallback
         
@@ -1171,17 +1238,20 @@ class SmartFractionalPositionManager:
         phase_config = self.current_config['wyckoff_phases'].get(signal.phase, {})
         initial_allocation = phase_config.get('initial_allocation', 0.3)
         
+        # Calculate position size
         position_size = base_size * initial_allocation
         
-        # Apply multiple safety limits
+        # Apply multiple safety limits (take the minimum)
         safety_limits = [
-            position_size,
+            position_size,  # Base calculation
             account_cash * 0.25,  # Max 25% of account cash  
             12.0,  # Hard cap at $12
-            account_cash - 15.0  # Leave $15 buffer
+            account_cash - 15.0  # Leave $15 buffer minimum
         ]
         
         position_size = min([limit for limit in safety_limits if limit > 0])
+        
+        # Ensure minimum viable position
         position_size = max(position_size, 5.0)
         
         # Final safety check
@@ -1477,8 +1547,8 @@ class EnhancedFractionalTradingBot:
         )
         
         self.logger = logging.getLogger(__name__)
-        self.logger.info("🚀 ENHANCED FRACTIONAL TRADING BOT")
-        self.logger.info("💰 Dynamic account sizing + Advanced Wyckoff exits")
+        self.logger.info("🚀 ENHANCED FRACTIONAL TRADING BOT - FIXED VERSION")
+        self.logger.info("💰 Conservative position sizing + Advanced Wyckoff exits")
         self.logger.info("🛡️ Portfolio protection + Position reconciliation")
     
     def initialize_systems(self) -> bool:
@@ -1537,10 +1607,20 @@ class EnhancedFractionalTradingBot:
             return False    
         
     def execute_buy_order(self, signal: WyckoffSignal, account, position_size: float) -> bool:
-        """Execute buy order with enhanced tracking and session management"""
+        """FIXED: Execute buy order with strict cash validation and fractional handling"""
         try:
             if not self.main_system.account_manager.switch_to_account(account):
                 self.logger.error(f"❌ Failed to switch to account for {signal.symbol}")
+                return False
+            
+            # STRICT cash validation BEFORE attempting order
+            available_cash = account.settled_funds
+            min_buffer = 15.0  # Always keep $15 buffer
+            
+            if available_cash < position_size + min_buffer:
+                self.logger.warning(f"⚠️ INSUFFICIENT CASH for {signal.symbol}")
+                self.logger.warning(f"   Required: ${position_size:.2f} + ${min_buffer:.2f} buffer = ${position_size + min_buffer:.2f}")
+                self.logger.warning(f"   Available: ${available_cash:.2f}")
                 return False
             
             # Check and refresh session before critical operations
@@ -1554,11 +1634,30 @@ class EnhancedFractionalTradingBot:
                 return False
             
             current_price = float(quote_data['close'])
+            max_affordable_shares = (available_cash - min_buffer) / current_price
             shares_to_buy = position_size / current_price
-            shares_to_buy = round(shares_to_buy, 5)
             
-            self.logger.info(f"💰 Buying {shares_to_buy:.5f} shares of {signal.symbol} at ${current_price:.2f}")
-            self.logger.info(f"   Position: ${position_size:.2f} ({signal.phase} phase, strength: {signal.strength:.2f})")
+            # Ensure we don't exceed what we can afford
+            if shares_to_buy > max_affordable_shares:
+                shares_to_buy = max_affordable_shares
+                position_size = shares_to_buy * current_price  # Recalculate actual cost
+                self.logger.info(f"🔧 Reduced order to affordable size: {shares_to_buy:.5f} shares")
+            
+            shares_to_buy = round(shares_to_buy, 5)
+            actual_cost = shares_to_buy * current_price
+            
+            # Final validation
+            if shares_to_buy < 0.00001:
+                self.logger.warning(f"⚠️ Order too small: {shares_to_buy} shares")
+                return False
+            
+            if actual_cost > available_cash - min_buffer:
+                self.logger.error(f"❌ COST VALIDATION FAILED: ${actual_cost:.2f} > ${available_cash - min_buffer:.2f}")
+                return False
+            
+            self.logger.info(f"💰 Buying {shares_to_buy:.5f} shares of {signal.symbol}")
+            self.logger.info(f"   Price: ${current_price:.2f}, Cost: ${actual_cost:.2f}")
+            self.logger.info(f"   Cash before: ${available_cash:.2f}, Will remain: ${available_cash - actual_cost:.2f}")
             
             # Ensure session is still valid before placing order
             if not self._ensure_valid_session():
@@ -1591,7 +1690,7 @@ class EnhancedFractionalTradingBot:
                     order_id=order_id
                 )
                 
-                # Enhanced position tracking WITH ACCOUNT TYPE
+                # FIXED: Enhanced position tracking WITH ACCOUNT TYPE
                 self.database.update_position(
                     symbol=signal.symbol,
                     shares=shares_to_buy,
@@ -1600,6 +1699,9 @@ class EnhancedFractionalTradingBot:
                     entry_phase=signal.phase,
                     entry_strength=signal.strength
                 )
+                
+                # Update account cash tracking
+                account.settled_funds -= actual_cost
                 
                 self.logger.info(f"✅ Buy order executed: {signal.symbol} - Order ID: {order_id}")
                 return True
@@ -1865,7 +1967,7 @@ class EnhancedFractionalTradingBot:
         return False
     
     def check_enhanced_profit_scaling(self, symbol: str, position: Dict, dynamic_targets: List[Dict]) -> Optional[Dict]:
-        """Check for profit scaling with dynamic targets"""
+        """FIXED: Check for profit scaling with conservative fractional share handling"""
         try:
             quote_data = self.main_system.wb.get_quote(symbol)
             if not quote_data or 'close' not in quote_data:
@@ -1873,34 +1975,56 @@ class EnhancedFractionalTradingBot:
             
             current_price = float(quote_data['close'])
             avg_cost = position['avg_cost']
-            shares = position['shares']
+            total_shares = position['shares']
             gain_pct = (current_price - avg_cost) / avg_cost
+            
+            self.logger.debug(f"Checking scaling for {symbol}: {total_shares:.5f} shares, {gain_pct:.1%} gain")
             
             for target in dynamic_targets:
                 if gain_pct >= target['gain_pct']:
                     if not self.database.already_scaled_at_level(symbol, target['gain_pct']):
-                        shares_to_sell = shares * target['sell_pct']
+                        # CONSERVATIVE: Scale smaller percentages and ensure we don't oversell
+                        conservative_sell_pct = target['sell_pct'] * 0.8  # Reduce by 20%
+                        shares_to_sell = total_shares * conservative_sell_pct
+                        
+                        # Round to avoid precision issues
+                        shares_to_sell = round(shares_to_sell, 5)
+                        
+                        # Ensure we don't try to sell more than 90% of position
+                        max_sellable = total_shares * 0.9
+                        shares_to_sell = min(shares_to_sell, max_sellable)
+                        
+                        # Validate minimum sale value and share amount
                         sale_value = shares_to_sell * current_price
                         
-                        if sale_value >= 5.0:
+                        if sale_value >= 2.0 and shares_to_sell >= 0.00001:  # Minimum $2 sale
+                            remaining_shares = total_shares - shares_to_sell
+                            
+                            self.logger.info(f"💰 Profit scaling opportunity: {symbol}")
+                            self.logger.info(f"   Sell {shares_to_sell:.5f} of {total_shares:.5f} shares ({conservative_sell_pct:.1%})")
+                            self.logger.info(f"   Gain: {gain_pct:.1%}, Value: ${sale_value:.2f}")
+                            
                             return {
                                 'symbol': symbol,
                                 'shares_to_sell': shares_to_sell,
                                 'current_price': current_price,
                                 'gain_pct': gain_pct,
                                 'profit_amount': (current_price - avg_cost) * shares_to_sell,
-                                'reason': f"DYNAMIC_PROFIT_{target['gain_pct']*100:.0f}PCT",
-                                'description': f"Dynamic target: {target['reasoning']}",
-                                'remaining_shares': shares - shares_to_sell,
+                                'reason': f"CONSERVATIVE_SCALE_{target['gain_pct']*100:.0f}PCT",
+                                'description': f"Conservative {conservative_sell_pct:.1%} scale at {gain_pct:.1%} gain",
+                                'remaining_shares': remaining_shares,
                                 'account_type': position['account_type'],
                                 'scaling_level': f"{target['gain_pct']*100:.0f}PCT"
                             }
+                        else:
+                            self.logger.debug(f"Sale too small for {symbol}: ${sale_value:.2f}, {shares_to_sell:.5f} shares")
                         break
-        
+            
+            return None
+            
         except Exception as e:
-            self.logger.error(f"Error checking enhanced scaling for {symbol}: {e}")
-        
-        return None
+            self.logger.error(f"Error checking profit scaling for {symbol}: {e}")
+            return None
     
     def execute_enhanced_profit_scaling(self, opportunity: Dict) -> bool:
         """Execute profit scaling with enhanced tracking and fractional share handling"""
@@ -2075,14 +2199,14 @@ class EnhancedFractionalTradingBot:
         return False
     
     def run_enhanced_trading_cycle(self) -> Tuple[int, int, int, int]:
-        """Enhanced trading cycle with comprehensive exit management"""
+        """FIXED: Enhanced trading cycle with comprehensive exit management"""
         trades_executed = 0
         wyckoff_sells = 0
         profit_scales = 0
         emergency_exits = 0
         
         try:
-            # Step 1: Update configuration
+            # Step 1: Update configuration with conservative sizing
             config = self.position_manager.update_config(self.main_system.account_manager)
             
             # Step 2: Get current positions
@@ -2185,14 +2309,25 @@ class EnhancedFractionalTradingBot:
                     if buy_signals and len(current_positions) < config['max_positions']:
                         enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
                         
-                        for signal in buy_signals[:config['max_positions'] - len(current_positions)]:
+                        # FIXED: Conservative approach to signal selection
+                        for signal in buy_signals[:max(1, config['max_positions'] - len(current_positions))]:
                             best_account = max(enabled_accounts, key=lambda x: x.settled_funds)
-                            position_size = self.position_manager.get_position_size_for_signal(signal)
                             
-                            if best_account.settled_funds >= position_size + config['min_balance_preserve']:
+                            # FIXED: Use the new conservative position sizing
+                            position_size = self.position_manager.get_position_size_for_signal(signal, best_account)
+                            
+                            # Only proceed if we have a viable position size and sufficient cash
+                            if (position_size > 0 and 
+                                best_account.settled_funds >= position_size + config.get('min_cash_buffer_per_account', 15.0)):
+                                
                                 if self.execute_buy_order(signal, best_account, position_size):
                                     trades_executed += 1
                                     best_account.settled_funds -= position_size
+                                    
+                                    # Add small delay between orders
+                                    time.sleep(2)
+                            else:
+                                self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
             
             return trades_executed, wyckoff_sells, profit_scales, emergency_exits
             
@@ -2242,7 +2377,7 @@ class EnhancedFractionalTradingBot:
                 emergency_mode=self.emergency_mode,
                 market_condition='UNKNOWN',  # Would get from risk assessment
                 portfolio_drawdown_pct=0.0,  # Would calculate
-                status="COMPLETED_ENHANCED",
+                status="COMPLETED_ENHANCED_FIXED",
                 log_details=f"Actions: Buy={trades}, Wyckoff={wyckoff_sells}, Profit={profit_scales}, Emergency={emergency_exits}"
             )
             
@@ -2351,7 +2486,7 @@ def run_manual_analysis():
 
 def main():
     """Main entry point"""
-    print("🚀 Enhanced Fractional Trading Bot Starting...")
+    print("🚀 Enhanced Fractional Trading Bot Starting - FIXED VERSION...")
     
     bot = EnhancedFractionalTradingBot()
     success = bot.run()
@@ -2367,4 +2502,8 @@ def main():
 if __name__ == "__main__":
     # Uncomment to run manual analysis instead of trading
     # run_manual_analysis()
+    
+    # Uncomment to run database sync fix
+    # manual_database_sync_fix()
+    
     main()
