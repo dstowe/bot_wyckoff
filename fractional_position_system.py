@@ -320,15 +320,11 @@ class EnhancedTradingDatabase:
                 entry_phase or 'UNKNOWN', entry_strength or 0.0, self.bot_id))
     
     def _update_positions_enhanced_table(self, conn, symbol: str, shares: float, cost: float, 
-                                       account_type: str, entry_phase: str, entry_strength: float, today: str):
-        """Update enhanced positions table with additional metrics"""
-        # Calculate additional metrics
-        position_size_pct = 0.1  # Default, would be calculated based on portfolio value
-        time_held_days = 0  # Would be calculated from first_purchase_date
-        volatility_percentile = 0.5  # Default, would be calculated from market data
+                                    account_type: str, entry_phase: str, entry_strength: float, today: str):
+        """FIXED: Enhanced positions table update with proper synchronization"""
         
-        # Use symbol, account_type, AND bot_id to find the record
-        existing = conn.execute(
+        # Get current enhanced position if it exists
+        existing_enhanced = conn.execute(
             '''SELECT total_shares, avg_cost, total_invested, first_purchase_date, 
                     entry_phase, entry_strength, position_size_pct, time_held_days, volatility_percentile 
             FROM positions_enhanced 
@@ -336,8 +332,8 @@ class EnhancedTradingDatabase:
             (symbol, account_type, self.bot_id)
         ).fetchone()
         
-        if existing:
-            old_shares, old_avg_cost, old_invested, first_date, old_phase, old_strength, old_size_pct, old_days, old_vol = existing
+        if existing_enhanced:
+            old_shares, old_avg_cost, old_invested, first_date, old_phase, old_strength, old_size_pct, old_days, old_vol = existing_enhanced
             new_shares = old_shares + shares
             
             # Calculate time held
@@ -345,7 +341,7 @@ class EnhancedTradingDatabase:
                 first_purchase_dt = datetime.strptime(first_date, '%Y-%m-%d')
                 time_held_days = (datetime.now() - first_purchase_dt).days
             except:
-                time_held_days = old_days
+                time_held_days = old_days or 0
             
             if new_shares > 0:
                 new_invested = old_invested + (shares * cost)
@@ -358,6 +354,7 @@ class EnhancedTradingDatabase:
                 use_phase = old_phase
                 use_strength = old_strength
             
+            # Update enhanced position
             conn.execute('''
                 UPDATE positions_enhanced 
                 SET total_shares = ?, avg_cost = ?, total_invested = ?, 
@@ -366,20 +363,21 @@ class EnhancedTradingDatabase:
                     updated_at = CURRENT_TIMESTAMP
                 WHERE symbol = ? AND account_type = ? AND bot_id = ?
             ''', (new_shares, new_avg_cost, new_invested, today, use_phase, use_strength,
-                  position_size_pct, time_held_days, volatility_percentile,
-                  symbol, account_type, self.bot_id))
+                old_size_pct or 0.1, time_held_days, old_vol or 0.5,
+                symbol, account_type, self.bot_id))
         else:
-            # Insert new enhanced position
-            conn.execute('''
-                INSERT INTO positions_enhanced (symbol, account_type, total_shares, avg_cost, total_invested, 
-                                              first_purchase_date, last_purchase_date, 
-                                              entry_phase, entry_strength, position_size_pct,
-                                              time_held_days, volatility_percentile, bot_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (symbol, account_type, shares, cost, shares * cost, today, today,
-                  entry_phase or 'UNKNOWN', entry_strength or 0.0, position_size_pct,
-                  time_held_days, volatility_percentile, self.bot_id))
-    
+            # Insert new enhanced position - only if we're adding shares
+            if shares > 0:
+                conn.execute('''
+                    INSERT INTO positions_enhanced (symbol, account_type, total_shares, avg_cost, total_invested, 
+                                                first_purchase_date, last_purchase_date, 
+                                                entry_phase, entry_strength, position_size_pct,
+                                                time_held_days, volatility_percentile, bot_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (symbol, account_type, shares, cost, shares * cost, today, today,
+                    entry_phase or 'UNKNOWN', entry_strength or 0.0, 0.1,
+                    0, 0.5, self.bot_id))
+        
     def get_position(self, symbol: str, account_type: str = None) -> Optional[Dict]:
         """Get current position for a symbol in a specific account or all accounts"""
         with sqlite3.connect(self.db_path) as conn:
@@ -784,7 +782,7 @@ class DynamicAccountManager:
             
             self.logger.info(f"💰 Real Account Values - Total: ${total_value:.2f}, Cash: ${total_cash:.2f}")
             
-            config = self._calculate_dynamic_parameters(total_value, total_cash, len(enabled_accounts))
+            config = self._calculate_dynamic_parameters(total_value, total_cash, enabled_accounts)
             self.cached_config = config
             self.last_update = datetime.now()
             
@@ -794,31 +792,40 @@ class DynamicAccountManager:
             self.logger.error(f"❌ Error getting dynamic config: {e}")
             return self._get_fallback_config()
     
-    def _calculate_dynamic_parameters(self, total_value: float, total_cash: float, num_accounts: int) -> Dict:
-        """Calculate trading parameters based on real account values"""
+    def _calculate_dynamic_parameters(self, total_value: float, total_cash: float, enabled_accounts: list) -> Dict:
+        """FIXED: Calculate much more conservative parameters"""
         
-        if total_cash < 200:
-            base_position_pct = 0.15
+        num_accounts = len(enabled_accounts)
+
+        # Find the account with the most cash for primary trading
+        max_cash_available = max(acc.settled_funds for acc in enabled_accounts) if enabled_accounts else total_cash
+        
+        # FIXED: Much more conservative position sizing
+        if total_cash < 100:
+            base_position_pct = 0.08  # 8% of total cash
+            max_positions = 2
+            min_balance_pct = 0.40  # Keep 40% cash
+        elif total_cash < 300:
+            base_position_pct = 0.10  # 10% of total cash
             max_positions = 3
-            min_balance_pct = 0.25
-        elif total_cash < 500:
-            base_position_pct = 0.12
-            max_positions = 4
-            min_balance_pct = 0.20
-        elif total_cash < 1000:
-            base_position_pct = 0.10
-            max_positions = 5
-            min_balance_pct = 0.15
+            min_balance_pct = 0.30  # Keep 30% cash
         else:
-            base_position_pct = 0.08
-            max_positions = 6
-            min_balance_pct = 0.12
+            base_position_pct = 0.15  # 15% of total cash
+            max_positions = 4
+            min_balance_pct = 0.25  # Keep 25% cash
         
-        base_position_size = total_cash * base_position_pct
+        # FIXED: Calculate based on per-account maximum to prevent overdrafts
+        base_position_size = min(
+            total_cash * base_position_pct,  # Percentage of total cash
+            max_cash_available * 0.4,       # Max 40% of any single account
+            15.0                            # Hard cap at $15 per position
+        )
+        
         min_balance_preserve = total_cash * min_balance_pct
         
+        # Ensure minimum viable position size
         if base_position_size < 5.0:
-            base_position_size = min(5.0, total_cash * 0.5)
+            base_position_size = min(5.0, total_cash * 0.3)
         
         wyckoff_phases = {
             'ST': {'initial_allocation': 0.60, 'allow_additions': False, 'max_total_allocation': 0.60},
@@ -1147,22 +1154,42 @@ class SmartFractionalPositionManager:
         self.current_config = self.dynamic_manager.get_dynamic_config(account_manager)
         return self.current_config
     
-    def get_position_size_for_signal(self, signal: WyckoffSignal) -> float:
-        """Calculate position size for a specific Wyckoff signal"""
+    def get_position_size_for_signal(self, signal: WyckoffSignal, target_account) -> float:
+        """FIXED: Calculate position size with account-specific limits"""
         if not self.current_config:
-            return 10.0
+            return 5.0  # Very conservative fallback
         
+        # Get account-specific available cash
+        account_cash = target_account.settled_funds
+        
+        if account_cash < 20.0:  # Need minimum $20 to trade
+            self.logger.warning(f"⚠️ Insufficient cash in {target_account.account_type}: ${account_cash:.2f}")
+            return 0.0
+        
+        # Start with smaller base size
         base_size = self.current_config['base_position_size']
         phase_config = self.current_config['wyckoff_phases'].get(signal.phase, {})
-        initial_allocation = phase_config.get('initial_allocation', 0.5)
+        initial_allocation = phase_config.get('initial_allocation', 0.3)
         
         position_size = base_size * initial_allocation
+        
+        # Apply multiple safety limits
+        safety_limits = [
+            position_size,
+            account_cash * 0.25,  # Max 25% of account cash  
+            12.0,  # Hard cap at $12
+            account_cash - 15.0  # Leave $15 buffer
+        ]
+        
+        position_size = min([limit for limit in safety_limits if limit > 0])
         position_size = max(position_size, 5.0)
         
-        max_position = self.current_config['total_cash'] - self.current_config['min_balance_preserve']
-        position_size = min(position_size, max_position)
+        # Final safety check
+        if position_size >= account_cash - 10.0:
+            position_size = max(5.0, account_cash - 15.0)
         
-        self.logger.debug(f"💰 {signal.symbol} ({signal.phase}): ${position_size:.2f} position")
+        self.logger.info(f"💰 CONSERVATIVE: {signal.symbol} ({signal.phase}): ${position_size:.2f}")
+        self.logger.info(f"   Account: {target_account.account_type}, Cash: ${account_cash:.2f}")
         
         return position_size
     
