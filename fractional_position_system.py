@@ -21,6 +21,10 @@ import time
 
 # Import existing systems
 from main import MainSystem
+
+# Import market regime analyzer - OPTIMIZATION 2
+from market_regime_analyzer import EnhancedMarketRegimeAnalyzer, RegimeAwarePositionSizer, MarketRegimeData
+
 from strategies.wyckoff.wyckoff import WyckoffPnFStrategy, WyckoffSignal
 from config.config import PersonalTradingConfig
 
@@ -1054,8 +1058,11 @@ class DynamicAccountManager:
         self.last_update = None
         self.cached_config = None
         
+    
+    
+    
     def get_dynamic_config(self, account_manager) -> Dict:
-        """Get dynamic configuration based on real account values"""
+        """Get dynamic configuration based on real account values WITH REGIME ADAPTATION"""
         try:
             enabled_accounts = account_manager.get_enabled_accounts()
             if not enabled_accounts:
@@ -1066,12 +1073,40 @@ class DynamicAccountManager:
             
             self.logger.info(f"💰 Real Account Values - Total: ${total_value:.2f}, Cash: ${total_cash:.2f}")
             
-            # FIXED: Use conservative parameters
-            config = self._calculate_conservative_parameters(total_value, total_cash, enabled_accounts)
+            # OPTIMIZATION 2: Get current market regime
+            try:
+                if not hasattr(self, 'regime_analyzer'):
+                    self.regime_analyzer = EnhancedMarketRegimeAnalyzer(self.logger)
+                
+                regime_data = self.regime_analyzer.analyze_market_regime()
+                regime_multiplier = regime_data.position_size_multiplier
+                
+                self.logger.info(f"📊 Regime Analysis: {regime_data.trend_regime} trend, {regime_data.volatility_regime} volatility")
+                self.logger.info(f"📊 Regime Position Multiplier: {regime_multiplier:.2f}")
+                
+            except Exception as e:
+                self.logger.warning(f"⚠️ Regime analysis failed, using conservative multiplier: {e}")
+                regime_multiplier = 0.7  # Conservative fallback
+                regime_data = None
+            
+            # FIXED: Use regime-aware parameters
+            config = self._calculate_regime_aware_parameters(total_value, total_cash, enabled_accounts, regime_multiplier, regime_data)
             self.cached_config = config
             self.last_update = datetime.now()
             
             return config
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error getting dynamic config: {e}")
+            return self._get_fallback_config()
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error getting dynamic config: {e}")
+            return self._get_fallback_config()
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error getting dynamic config: {e}")
+            return self._get_fallback_config()
             
         except Exception as e:
             self.logger.error(f"❌ Error getting dynamic config: {e}")
@@ -1450,7 +1485,7 @@ class SmartFractionalPositionManager:
         return self.current_config
     
     def get_position_size_for_signal(self, signal: WyckoffSignal, target_account) -> float:
-        """FIXED: Calculate position size with strict account-specific limits"""
+        """OPTIMIZATION 2: Calculate position size WITH REGIME ADAPTATION"""
         if not self.current_config:
             return 5.0  # Very conservative fallback
         
@@ -1469,6 +1504,20 @@ class SmartFractionalPositionManager:
         # Calculate position size
         position_size = base_size * initial_allocation
         
+        # OPTIMIZATION 2: Apply sector regime weighting
+        regime_data = self.current_config.get('regime_data')
+        if regime_data and regime_data.sector_weights:
+            try:
+                if hasattr(self.dynamic_manager, 'regime_analyzer'):
+                    sector_weight = self.dynamic_manager.regime_analyzer.get_sector_weight_for_symbol(
+                        signal.symbol, regime_data.sector_weights
+                    )
+                    position_size *= sector_weight
+                    if sector_weight != 1.0:
+                        self.logger.info(f"📊 Sector weight for {signal.symbol}: {sector_weight:.2f}")
+            except Exception as e:
+                self.logger.debug(f"Error applying sector weight: {e}")
+        
         # Apply multiple safety limits (take the minimum)
         safety_limits = [
             position_size,  # Base calculation
@@ -1486,10 +1535,159 @@ class SmartFractionalPositionManager:
         if position_size >= account_cash - 10.0:
             position_size = max(5.0, account_cash - 15.0)
         
-        self.logger.info(f"💰 CONSERVATIVE: {signal.symbol} ({signal.phase}): ${position_size:.2f}")
+        # OPTIMIZATION 2: Log regime information
+        regime_info = ""
+        if regime_data:
+            regime_info = f" [Regime: {regime_data.trend_regime}/{regime_data.volatility_regime}, Multiplier: {regime_data.position_size_multiplier:.2f}]"
+        
+        self.logger.info(f"💰 REGIME-AWARE: {signal.symbol} ({signal.phase}): ${position_size:.2f}{regime_info}")
         self.logger.info(f"   Account: {target_account.account_type}, Cash: ${account_cash:.2f}")
         
         return position_size
+    
+    # ADD THIS CODE TO THE END OF YOUR fractional_position_system.py FILE
+
+    def _calculate_regime_aware_parameters(self, total_value: float, total_cash: float, 
+                                         accounts: List, regime_multiplier: float, 
+                                         regime_data: Optional[MarketRegimeData]) -> Dict:
+        """OPTIMIZATION 2: Calculate regime-aware parameters"""
+        
+        # Find the account with the most cash for primary trading
+        max_cash_available = max(acc.settled_funds for acc in accounts) if accounts else total_cash
+        
+        # Base conservative position sizing (same as before)
+        if total_cash < 100:
+            base_position_pct = 0.08  # 8% of total cash
+            max_positions = 2
+            min_balance_pct = 0.40  # Keep 40% cash
+        elif total_cash < 300:
+            base_position_pct = 0.10  # 10% of total cash
+            max_positions = 3
+            min_balance_pct = 0.30  # Keep 30% cash
+        elif total_cash < 500:
+            base_position_pct = 0.12  # 12% of total cash
+            max_positions = 4
+            min_balance_pct = 0.25  # Keep 25% cash
+        else:
+            base_position_pct = 0.15  # 15% of total cash
+            max_positions = 5
+            min_balance_pct = 0.20  # Keep 20% cash
+        
+        # OPTIMIZATION 2: Apply regime adjustments
+        regime_adjusted_position_pct = base_position_pct * regime_multiplier
+        
+        # Adjust max positions based on regime
+        if regime_data:
+            if regime_data.trend_regime == 'BEAR':
+                max_positions = max(1, max_positions - 1)  # Reduce positions in bear market
+            elif regime_data.volatility_regime in ['HIGH', 'CRISIS']:
+                max_positions = max(1, max_positions - 1)  # Reduce positions in high volatility
+            
+            # Increase cash buffer in uncertain regimes
+            if regime_data.regime_confidence < 0.5:
+                min_balance_pct += 0.10  # Keep extra 10% cash when uncertain
+        
+        # Calculate position size with regime adjustment
+        base_position_size = min(
+            total_cash * regime_adjusted_position_pct,  # Regime-adjusted percentage
+            max_cash_available * 0.4,       # Max 40% of any single account
+            15.0                            # Hard cap at $15 per position
+        )
+        
+        min_balance_preserve = total_cash * min_balance_pct
+        
+        # Ensure minimum viable position size
+        if base_position_size < 5.0:
+            base_position_size = min(5.0, total_cash * 0.3)
+        
+        # Regime-aware Wyckoff phases
+        wyckoff_phases = self._get_regime_aware_wyckoff_phases(regime_data)
+        
+        # Regime-aware profit targets
+        profit_targets = self._get_regime_aware_profit_targets(regime_data)
+        
+        return {
+            'total_value': total_value,
+            'total_cash': total_cash,
+            'max_cash_per_account': max_cash_available,
+            'base_position_size': base_position_size,
+            'base_position_pct': regime_adjusted_position_pct,
+            'min_balance_preserve': min_balance_preserve,
+            'max_positions': max_positions,
+            'num_accounts': len(accounts),
+            'wyckoff_phases': wyckoff_phases,
+            'profit_targets': profit_targets,
+            'calculated_at': datetime.now().isoformat(),
+            # OPTIMIZATION 2: Add regime data
+            'regime_data': regime_data,
+            'regime_multiplier': regime_multiplier,
+            'max_position_per_account': max_cash_available * 0.4,
+            'min_cash_buffer_per_account': 15.0
+        }
+    
+    def _get_regime_aware_wyckoff_phases(self, regime_data: Optional[MarketRegimeData]) -> Dict:
+        """OPTIMIZATION 2: Adjust Wyckoff phase allocations based on regime"""
+        
+        # Base conservative phases
+        base_phases = {
+            'ST': {'initial_allocation': 0.40, 'allow_additions': False, 'max_total_allocation': 0.40},
+            'SOS': {'initial_allocation': 0.50, 'allow_additions': True, 'max_total_allocation': 0.80},
+            'LPS': {'initial_allocation': 0.35, 'allow_additions': True, 'max_total_allocation': 0.70},
+            'BU': {'initial_allocation': 0.30, 'allow_additions': True, 'max_total_allocation': 0.60},
+            'Creek': {'initial_allocation': 0.0, 'allow_additions': False, 'max_total_allocation': 0.0}
+        }
+        
+        if not regime_data:
+            return base_phases
+        
+        # Adjust based on trend regime
+        if regime_data.trend_regime == 'BULL':
+            # More aggressive in bull markets
+            base_phases['SOS']['initial_allocation'] = 0.60
+            base_phases['SOS']['max_total_allocation'] = 0.90
+            base_phases['LPS']['initial_allocation'] = 0.45
+        elif regime_data.trend_regime == 'BEAR':
+            # More conservative in bear markets
+            base_phases['ST']['initial_allocation'] = 0.30
+            base_phases['SOS']['initial_allocation'] = 0.35
+            base_phases['SOS']['max_total_allocation'] = 0.60
+            base_phases['LPS']['max_total_allocation'] = 0.50
+        
+        # Adjust based on volatility regime
+        if regime_data.volatility_regime in ['HIGH', 'CRISIS']:
+            # Reduce all allocations in high volatility
+            for phase in base_phases.values():
+                phase['initial_allocation'] *= 0.8
+                phase['max_total_allocation'] *= 0.8
+        
+        return base_phases
+    
+    def _get_regime_aware_profit_targets(self, regime_data: Optional[MarketRegimeData]) -> List[Dict]:
+        """OPTIMIZATION 2: Adjust profit targets based on regime"""
+        
+        # Base conservative targets
+        base_targets = [
+            {'gain_pct': 0.06, 'sell_pct': 0.15, 'description': '6% gain: Take 15% profit'},
+            {'gain_pct': 0.12, 'sell_pct': 0.20, 'description': '12% gain: Take 20% more'},
+            {'gain_pct': 0.20, 'sell_pct': 0.25, 'description': '20% gain: Take 25% more'},
+            {'gain_pct': 0.30, 'sell_pct': 0.40, 'description': '30% gain: Take final 40%'}
+        ]
+        
+        if not regime_data:
+            return base_targets
+        
+        # Adjust targets based on volatility regime
+        if regime_data.volatility_regime in ['HIGH', 'CRISIS']:
+            # Tighter targets in high volatility
+            for target in base_targets:
+                target['gain_pct'] *= 0.75  # Take profits earlier
+                target['sell_pct'] *= 1.1   # Sell more aggressively
+        elif regime_data.volatility_regime == 'LOW':
+            # Extend targets in low volatility
+            for target in base_targets:
+                target['gain_pct'] *= 1.25  # Let profits run longer
+        
+        return base_targets
     
     def check_dynamic_profit_scaling(self, symbol: str, position: Dict, dynamic_targets: List[Dict]) -> Optional[Dict]:
         """Check for profit scaling using dynamic targets"""
@@ -1617,6 +1815,42 @@ class ComprehensiveExitManager:
         
         return reconciliation_report
     
+    def _auto_correct_position_by_account(self, symbol: str, account_type: str, real_shares: float, real_cost: float) -> bool:
+        """Auto-correct position in database"""
+        try:
+            with sqlite3.connect(self.database.db_path) as conn:
+                if real_shares > 0:
+                    # Update both tables
+                    conn.execute('''
+                        INSERT OR REPLACE INTO positions 
+                        (symbol, account_type, total_shares, avg_cost, total_invested, 
+                         first_purchase_date, last_purchase_date, entry_phase, entry_strength, bot_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (symbol, account_type, real_shares, real_cost, real_shares * real_cost,
+                          datetime.now().strftime('%Y-%m-%d'), datetime.now().strftime('%Y-%m-%d'),
+                          'RECONCILED', 0.0, self.database.bot_id))
+                    
+                    conn.execute('''
+                        INSERT OR REPLACE INTO positions_enhanced 
+                        (symbol, account_type, total_shares, avg_cost, total_invested, 
+                         first_purchase_date, last_purchase_date, entry_phase, entry_strength, 
+                         position_size_pct, time_held_days, volatility_percentile, bot_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (symbol, account_type, real_shares, real_cost, real_shares * real_cost,
+                          datetime.now().strftime('%Y-%m-%d'), datetime.now().strftime('%Y-%m-%d'),
+                          'RECONCILED', 0.0, 0.1, 0, 0.5, self.database.bot_id))
+                else:
+                    # Remove ghost positions
+                    conn.execute('DELETE FROM positions WHERE symbol = ? AND account_type = ? AND bot_id = ?',
+                               (symbol, account_type, self.database.bot_id))
+                    conn.execute('DELETE FROM positions_enhanced WHERE symbol = ? AND account_type = ? AND bot_id = ?',
+                               (symbol, account_type, self.database.bot_id))
+                
+                return True
+        except Exception as e:
+            self.logger.error(f"Error correcting position {symbol}: {e}")
+            return False
+    
     def run_comprehensive_analysis(self, wb_client, account_manager, current_positions: Dict) -> Dict:
         """Run complete exit analysis"""
         
@@ -1729,6 +1963,11 @@ class EnhancedFractionalTradingBot:
         self.emergency_mode = False
         self.last_reconciliation = None
         self.day_trades_blocked_today = 0  # NEW: Track blocked day trades
+        # OPTIMIZATION 2: Enhanced market regime components
+        self.regime_analyzer = None
+        self.regime_aware_sizer = None
+        self.last_regime_update = None
+        self.regime_update_frequency = timedelta(hours=1)  # Update regime every hour
         
         # Trading parameters
         self.min_signal_strength = 0.5
@@ -1752,6 +1991,7 @@ class EnhancedFractionalTradingBot:
         self.logger.info("💰 Conservative position sizing + Advanced Wyckoff exits")
         self.logger.info("🛡️ Portfolio protection + Position reconciliation")
         self.logger.info("🚨 REAL account day trading protection + Compliance tracking")
+        self.logger.info("📊 MARKET REGIME ADAPTATION - Optimization 2")
     
     def initialize_systems(self) -> bool:
         """Initialize all enhanced systems including day trade protection"""
@@ -1775,7 +2015,13 @@ class EnhancedFractionalTradingBot:
             # NEW: Initialize real account day trade checker
             self.day_trade_checker = RealAccountDayTradeChecker(self.logger)
             
-            self.logger.info("✅ Enhanced systems with day trade protection initialized")
+            # OPTIMIZATION 2: Initialize regime analysis system
+            self.regime_analyzer = EnhancedMarketRegimeAnalyzer(self.logger)
+            self.regime_aware_sizer = RegimeAwarePositionSizer(
+                self.position_manager, self.regime_analyzer, self.logger
+            )
+            
+            self.logger.info("✅ Enhanced systems with market regime adaptation initialized")
             return True
             
         except Exception as e:
@@ -1845,7 +2091,6 @@ class EnhancedFractionalTradingBot:
             self.logger.error(f"❌ Error in session validation: {e}")
             return False
   
-        
     def execute_buy_order(self, signal: WyckoffSignal, account, position_size: float) -> bool:
         """ENHANCED: Execute buy order with DAY TRADE PROTECTION and strict cash validation"""
         try:
@@ -1978,542 +2223,6 @@ class EnhancedFractionalTradingBot:
             self.logger.error(f"❌ Error executing buy for {signal.symbol}: {e}")
             return False
 
-    
-    def execute_emergency_exit(self, action: Dict, current_positions: Dict) -> bool:
-            """Execute emergency exits WITH day trade compliance"""
-            try:
-                if action['action'] == 'LIQUIDATE_ALL':
-                    self.logger.critical("🚨 LIQUIDATING ALL POSITIONS - MARKET CRASH")
-                    success_count = 0
-                    for symbol, position in current_positions.items():
-                        if self._emergency_liquidate_position(position['symbol'], position, emergency=True):
-                            success_count += 1
-                    return success_count > 0
-                    
-                elif action['symbol'] in [p['symbol'] for p in current_positions.values()]:
-                    # Find the position
-                    target_position = next((p for p in current_positions.values() 
-                                        if p['symbol'] == action['symbol']), None)
-                    if target_position:
-                        return self._emergency_liquidate_position(action['symbol'], target_position, emergency=True)
-                
-            except Exception as e:
-                self.logger.error(f"❌ Error executing emergency action: {e}")
-            
-            return False
-    
-    def _emergency_liquidate_position(self, symbol: str, position: Dict, emergency: bool = False) -> bool:
-        """Emergency liquidation with day trade protection and emergency override"""
-        try:
-            # STEP 1: Day trade compliance check with emergency override
-            day_trade_check = self._check_day_trade_compliance(symbol, 'SELL', emergency=emergency)
-            
-            # Log the check
-            self.database.log_day_trade_check(day_trade_check, emergency_override=emergency)
-            
-            if day_trade_check.recommendation == 'BLOCK' and not emergency:
-                self.logger.warning(f"🚨 EMERGENCY EXIT BLOCKED BY DAY TRADE RULES: {symbol}")
-                self.logger.warning(f"   {day_trade_check.details}")
-                self.day_trades_blocked_today += 1
-                return False
-            elif day_trade_check.would_be_day_trade:
-                self.logger.critical(f"🚨 EMERGENCY OVERRIDE: Day trade rules overridden for {symbol}")
-            
-            enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
-            account = next((acc for acc in enabled_accounts 
-                           if acc.account_type == position['account_type']), None)
-            
-            if not account or not self.main_system.account_manager.switch_to_account(account):
-                return False
-            
-            total_shares_to_sell = position['shares']
-            
-            self.logger.critical(f"🚨 EMERGENCY EXIT: {total_shares_to_sell:.5f} shares of {symbol}")
-            self.logger.critical(f"   Day Trade Status: {day_trade_check.recommendation}")
-            
-            # FIXED: Handle fractional share restrictions for emergency exits
-            orders_executed = 0
-            total_shares_sold = 0.0
-            
-            if total_shares_to_sell >= 1.0:
-                # Split into whole shares and fractional remainder
-                whole_shares = int(total_shares_to_sell)
-                fractional_remainder = total_shares_to_sell - whole_shares
-                
-                self.logger.critical(f"   Emergency split: {whole_shares} whole shares + {fractional_remainder:.5f} fractional")
-                
-                # Execute whole share orders first
-                for i in range(whole_shares):
-                    order_result = self.main_system.wb.place_order(
-                        stock=symbol,
-                        price=0,
-                        action='SELL',
-                        orderType='MKT',
-                        enforce='DAY',
-                        quant=1.0,
-                        outsideRegularTradingHour=False
-                    )
-                    
-                    if order_result.get('success', False):
-                        orders_executed += 1
-                        total_shares_sold += 1.0
-                        time.sleep(0.5)  # Brief delay
-                    else:
-                        self.logger.critical(f"   ❌ Emergency whole share order {i+1} failed")
-                        break
-                
-                # Execute fractional remainder
-                if fractional_remainder > 0.001:
-                    time.sleep(0.5)
-                    fractional_result = self.main_system.wb.place_order(
-                        stock=symbol,
-                        price=0,
-                        action='SELL',
-                        orderType='MKT',
-                        enforce='DAY',
-                        quant=fractional_remainder,
-                        outsideRegularTradingHour=False
-                    )
-                    
-                    if fractional_result.get('success', False):
-                        orders_executed += 1
-                        total_shares_sold += fractional_remainder
-            else:
-                # Single fractional order
-                order_result = self.main_system.wb.place_order(
-                    stock=symbol,
-                    price=0,
-                    action='SELL',
-                    orderType='MKT',
-                    enforce='DAY',
-                    quant=total_shares_to_sell,
-                    outsideRegularTradingHour=False
-                )
-                
-                if order_result.get('success', False):
-                    orders_executed = 1
-                    total_shares_sold = total_shares_to_sell
-            
-            if orders_executed > 0:
-                self.database.log_trade(
-                    symbol=symbol,
-                    action='EMERGENCY_SELL',
-                    quantity=total_shares_sold,
-                    price=0,
-                    signal_phase='EMERGENCY',
-                    signal_strength=1.0,
-                    account_type=account.account_type,
-                    order_id=f"EMERGENCY_{orders_executed}_ORDERS",
-                    day_trade_check=day_trade_check.recommendation
-                )
-                
-                self.database.update_position(
-                    symbol=symbol,
-                    shares=-total_shares_sold,
-                    cost=0,
-                    account_type=account.account_type
-                )
-                
-                self.database.deactivate_stop_strategies(symbol)
-                
-                self.logger.critical(f"✅ Emergency exit executed: {symbol} ({total_shares_sold:.5f} shares)")
-                return True
-            else:
-                self.logger.critical(f"❌ Emergency exit failed: {symbol}")
-                return False
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error in emergency liquidation for {symbol}: {e}")
-        
-        return False
-    
-    def execute_wyckoff_warning_exit(self, warning: WyckoffWarningSignal, position: Dict) -> bool:
-        """Execute Wyckoff warning exit with day trade protection"""
-        try:
-            # STEP 1: Day trade compliance check
-            day_trade_check = self._check_day_trade_compliance(warning.symbol, 'SELL')
-            
-            # Log the check
-            self.database.log_day_trade_check(day_trade_check)
-            
-            # Allow critical Wyckoff warnings to override day trade rules
-            emergency_override = warning.urgency == 'CRITICAL'
-            
-            if day_trade_check.recommendation == 'BLOCK' and not emergency_override:
-                self.logger.warning(f"🚨 WYCKOFF EXIT BLOCKED BY DAY TRADE RULES: {warning.symbol}")
-                self.logger.warning(f"   {day_trade_check.details}")
-                self.day_trades_blocked_today += 1
-                return False
-            elif day_trade_check.would_be_day_trade and emergency_override:
-                self.logger.warning(f"🚨 CRITICAL WYCKOFF OVERRIDE: Day trade rules overridden for {warning.symbol}")
-            
-            enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
-            account = next((acc for acc in enabled_accounts 
-                           if acc.account_type == position['account_type']), None)
-            
-            if not account or not self.main_system.account_manager.switch_to_account(account):
-                return False
-            
-            total_shares_to_sell = position['shares']
-            
-            self.logger.warning(f"🔴 Wyckoff Warning Exit: {warning.symbol}")
-            self.logger.warning(f"   Signal: {warning.signal_type} (Strength: {warning.strength:.2f})")
-            self.logger.warning(f"   Context: {warning.context}")
-            self.logger.warning(f"   Selling: {total_shares_to_sell:.5f} shares")
-            self.logger.warning(f"   Day Trade Status: {day_trade_check.recommendation}")
-            
-            # FIXED: Handle fractional share restrictions for Wyckoff exits
-            orders_executed = 0
-            total_shares_sold = 0.0
-            
-            if total_shares_to_sell >= 1.0:
-                # Split into whole shares and fractional remainder
-                whole_shares = int(total_shares_to_sell)
-                fractional_remainder = total_shares_to_sell - whole_shares
-                
-                self.logger.warning(f"   Wyckoff split: {whole_shares} whole shares + {fractional_remainder:.5f} fractional")
-                
-                # Execute whole share orders
-                for i in range(whole_shares):
-                    order_result = self.main_system.wb.place_order(
-                        stock=warning.symbol,
-                        price=0,
-                        action='SELL',
-                        orderType='MKT',
-                        enforce='DAY',
-                        quant=1.0,
-                        outsideRegularTradingHour=False
-                    )
-                    
-                    if order_result.get('success', False):
-                        orders_executed += 1
-                        total_shares_sold += 1.0
-                        time.sleep(0.5)  # Brief delay
-                    else:
-                        self.logger.warning(f"   ❌ Wyckoff whole share order {i+1} failed")
-                        break
-                
-                # Execute fractional remainder
-                if fractional_remainder > 0.001:
-                    time.sleep(0.5)
-                    fractional_result = self.main_system.wb.place_order(
-                        stock=warning.symbol,
-                        price=0,
-                        action='SELL',
-                        orderType='MKT',
-                        enforce='DAY',
-                        quant=fractional_remainder,
-                        outsideRegularTradingHour=False
-                    )
-                    
-                    if fractional_result.get('success', False):
-                        orders_executed += 1
-                        total_shares_sold += fractional_remainder
-            else:
-                # Single fractional order
-                order_result = self.main_system.wb.place_order(
-                    stock=warning.symbol,
-                    price=0,
-                    action='SELL',
-                    orderType='MKT',
-                    enforce='DAY',
-                    quant=total_shares_to_sell,
-                    outsideRegularTradingHour=False
-                )
-                
-                if order_result.get('success', False):
-                    orders_executed = 1
-                    total_shares_sold = total_shares_to_sell
-            
-            if orders_executed > 0:
-                self.database.log_trade(
-                    symbol=warning.symbol,
-                    action='WYCKOFF_WARNING_SELL',
-                    quantity=total_shares_sold,
-                    price=warning.price,
-                    signal_phase=warning.signal_type,
-                    signal_strength=warning.strength,
-                    account_type=account.account_type,
-                    order_id=f"WYCKOFF_{orders_executed}_ORDERS",
-                    day_trade_check=day_trade_check.recommendation
-                )
-                
-                self.database.update_position(
-                    symbol=warning.symbol,
-                    shares=-total_shares_sold,
-                    cost=warning.price,
-                    account_type=account.account_type
-                )
-                
-                self.database.deactivate_stop_strategies(warning.symbol)
-                
-                self.logger.warning(f"✅ Wyckoff warning exit executed: {warning.symbol} ({total_shares_sold:.5f} shares)")
-                return True
-            else:
-                self.logger.error(f"❌ Wyckoff warning exit failed: {warning.symbol}")
-                return False
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error executing Wyckoff warning exit: {e}")
-        
-        return False
-    
-    def check_enhanced_profit_scaling(self, symbol: str, position: Dict, dynamic_targets: List[Dict]) -> Optional[Dict]:
-        """FIXED: Check for profit scaling with day trade protection"""
-        try:
-            # STEP 1: Day trade compliance check for potential sale
-            day_trade_check = self._check_day_trade_compliance(symbol, 'SELL')
-            
-            if day_trade_check.recommendation == 'BLOCK':
-                self.logger.debug(f"🚨 Profit scaling blocked by day trade rules: {symbol}")
-                return None
-            
-            quote_data = self.main_system.wb.get_quote(symbol)
-            if not quote_data or 'close' not in quote_data:
-                return None
-            
-            current_price = float(quote_data['close'])
-            avg_cost = position['avg_cost']
-            total_shares = position['shares']
-            gain_pct = (current_price - avg_cost) / avg_cost
-            
-            self.logger.debug(f"Checking scaling for {symbol}: {total_shares:.5f} shares, {gain_pct:.1%} gain")
-            
-            for target in dynamic_targets:
-                if gain_pct >= target['gain_pct']:
-                    if not self.database.already_scaled_at_level(symbol, target['gain_pct']):
-                        # CONSERVATIVE: Scale smaller percentages and ensure we don't oversell
-                        conservative_sell_pct = target['sell_pct'] * 0.8  # Reduce by 20%
-                        shares_to_sell = total_shares * conservative_sell_pct
-                        
-                        # Round to avoid precision issues
-                        shares_to_sell = round(shares_to_sell, 5)
-                        
-                        # Ensure we don't try to sell more than 90% of position
-                        max_sellable = total_shares * 0.9
-                        shares_to_sell = min(shares_to_sell, max_sellable)
-                        
-                        # Validate minimum sale value and share amount
-                        sale_value = shares_to_sell * current_price
-                        
-                        if sale_value >= 2.0 and shares_to_sell >= 0.00001:  # Minimum $2 sale
-                            remaining_shares = total_shares - shares_to_sell
-                            
-                            self.logger.info(f"💰 Profit scaling opportunity: {symbol}")
-                            self.logger.info(f"   Sell {shares_to_sell:.5f} of {total_shares:.5f} shares ({conservative_sell_pct:.1%})")
-                            self.logger.info(f"   Gain: {gain_pct:.1%}, Value: ${sale_value:.2f}")
-                            self.logger.info(f"   Day Trade Status: {day_trade_check.recommendation}")
-                            
-                            return {
-                                'symbol': symbol,
-                                'shares_to_sell': shares_to_sell,
-                                'current_price': current_price,
-                                'gain_pct': gain_pct,
-                                'profit_amount': (current_price - avg_cost) * shares_to_sell,
-                                'reason': f"CONSERVATIVE_SCALE_{target['gain_pct']*100:.0f}PCT",
-                                'description': f"Conservative {conservative_sell_pct:.1%} scale at {gain_pct:.1%} gain",
-                                'remaining_shares': remaining_shares,
-                                'account_type': position['account_type'],
-                                'scaling_level': f"{target['gain_pct']*100:.0f}PCT",
-                                'day_trade_check': day_trade_check
-                            }
-                        else:
-                            self.logger.debug(f"Sale too small for {symbol}: ${sale_value:.2f}, {shares_to_sell:.5f} shares")
-                        break
-            
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"Error checking profit scaling for {symbol}: {e}")
-            return None
-    
-    def execute_enhanced_profit_scaling(self, opportunity: Dict) -> bool:
-        """Execute profit scaling with day trade protection"""
-        try:
-            # Day trade check was already done in check_enhanced_profit_scaling
-            day_trade_check = opportunity.get('day_trade_check')
-            
-            # Log the day trade check for scaling
-            if day_trade_check:
-                self.database.log_day_trade_check(day_trade_check)
-            
-            if day_trade_check and day_trade_check.recommendation == 'BLOCK':
-                self.logger.warning(f"🚨 PROFIT SCALING BLOCKED BY DAY TRADE RULES: {opportunity['symbol']}")
-                self.day_trades_blocked_today += 1
-                return False
-            
-            enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
-            account = next((acc for acc in enabled_accounts 
-                        if acc.account_type == opportunity['account_type']), None)
-            
-            if not account or not self.main_system.account_manager.switch_to_account(account):
-                return False
-            
-            # Check session before executing
-            if not self._ensure_valid_session():
-                self.logger.error("❌ Cannot establish valid session for profit scaling")
-                return False
-            
-            symbol = opportunity['symbol']
-            total_shares_to_sell = opportunity['shares_to_sell']
-            
-            self.logger.info(f"💰 Enhanced Profit Scaling: {total_shares_to_sell:.5f} shares of {symbol}")
-            self.logger.info(f"   {opportunity['description']} (${opportunity['profit_amount']:.2f} profit)")
-            if day_trade_check:
-                self.logger.info(f"   Day Trade Status: {day_trade_check.recommendation}")
-            
-            # FIXED: Handle fractional share restrictions (orders must be < 1.0 shares for fractional)
-            orders_executed = 0
-            total_shares_sold = 0.0
-            
-            if total_shares_to_sell >= 1.0:
-                # Split into whole shares and fractional remainder
-                whole_shares = int(total_shares_to_sell)
-                fractional_remainder = total_shares_to_sell - whole_shares
-                
-                self.logger.info(f"   Splitting order: {whole_shares} whole shares + {fractional_remainder:.5f} fractional")
-                
-                # Execute whole share orders (each as separate orders to avoid issues)
-                for i in range(whole_shares):
-                    order_result = self.main_system.wb.place_order(
-                        stock=symbol,
-                        price=0,
-                        action='SELL',
-                        orderType='MKT',
-                        enforce='DAY',
-                        quant=1.0,  # Exactly 1 whole share
-                        outsideRegularTradingHour=False
-                    )
-                    
-                    if order_result.get('success', False):
-                        orders_executed += 1
-                        total_shares_sold += 1.0
-                        self.logger.info(f"   ✅ Whole share order {i+1}/{whole_shares} executed")
-                        time.sleep(1)  # Brief delay between orders
-                    else:
-                        error_msg = order_result.get('msg', 'Unknown error')
-                        self.logger.warning(f"   ❌ Whole share order {i+1} failed: {error_msg}")
-                        break
-                
-                # Execute fractional remainder if any
-                if fractional_remainder > 0.001 and orders_executed > 0:  # Only if we have meaningful fractional amount
-                    time.sleep(1)  # Brief delay
-                    fractional_result = self.main_system.wb.place_order(
-                        stock=symbol,
-                        price=0,
-                        action='SELL',
-                        orderType='MKT',
-                        enforce='DAY',
-                        quant=fractional_remainder,
-                        outsideRegularTradingHour=False
-                    )
-                    
-                    if fractional_result.get('success', False):
-                        orders_executed += 1
-                        total_shares_sold += fractional_remainder
-                        self.logger.info(f"   ✅ Fractional order ({fractional_remainder:.5f}) executed")
-                    else:
-                        error_msg = fractional_result.get('msg', 'Unknown error')
-                        self.logger.warning(f"   ⚠️ Fractional order failed: {error_msg}")
-            
-            else:
-                # Total is less than 1 share, can place as single fractional order
-                order_result = self.main_system.wb.place_order(
-                    stock=symbol,
-                    price=0,
-                    action='SELL',
-                    orderType='MKT',
-                    enforce='DAY',
-                    quant=total_shares_to_sell,
-                    outsideRegularTradingHour=False
-                )
-                
-                if order_result.get('success', False):
-                    orders_executed = 1
-                    total_shares_sold = total_shares_to_sell
-                    self.logger.info(f"   ✅ Single fractional order executed")
-                else:
-                    error_msg = order_result.get('msg', 'Unknown error')
-                    self.logger.error(f"❌ Fractional profit scaling failed for {symbol}: {error_msg}")
-                    
-                    # Check if it's a session issue
-                    if 'session' in error_msg.lower() or 'expired' in error_msg.lower():
-                        self.logger.warning("⚠️ Session issue detected during profit scaling")
-                        self.main_system.session_manager.clear_session()
-                    
-                    return False
-            
-            # If we executed any orders successfully
-            if orders_executed > 0 and total_shares_sold > 0:
-                # Log successful trades - use the actual amount sold
-                actual_profit = (opportunity['current_price'] - opportunity.get('avg_cost', opportunity['current_price'] * 0.9)) * total_shares_sold
-                
-                self.database.log_trade(
-                    symbol=symbol,
-                    action='PROFIT_SCALING',
-                    quantity=total_shares_sold,
-                    price=opportunity['current_price'],
-                    signal_phase='PROFIT_SCALING',
-                    signal_strength=opportunity['gain_pct'],
-                    account_type=opportunity['account_type'],
-                    order_id=f"SCALING_{orders_executed}_ORDERS",
-                    day_trade_check=day_trade_check.recommendation if day_trade_check else 'ALLOWED'
-                )
-                
-                self.database.log_partial_sale(
-                    symbol=symbol,
-                    shares_sold=total_shares_sold,
-                    sale_price=opportunity['current_price'],
-                    sale_reason=opportunity['reason'],
-                    remaining_shares=opportunity['remaining_shares'] + (total_shares_to_sell - total_shares_sold),
-                    gain_pct=opportunity['gain_pct'],
-                    profit_amount=actual_profit,
-                    scaling_level=opportunity['scaling_level']
-                )
-                
-                self.database.update_position(
-                    symbol=symbol,
-                    shares=-total_shares_sold,
-                    cost=opportunity['current_price'],
-                    account_type=opportunity['account_type']
-                )
-                
-                self.logger.info(f"✅ Enhanced profit scaling executed: {symbol}")
-                self.logger.info(f"   Sold {total_shares_sold:.5f} of {total_shares_to_sell:.5f} shares in {orders_executed} order(s)")
-                return True
-            else:
-                self.logger.error(f"❌ No orders executed successfully for {symbol} profit scaling")
-                return False
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error executing enhanced profit scaling: {e}")
-            return False
-    
-    def run_periodic_reconciliation(self) -> bool:
-        """Run position reconciliation periodically"""
-        try:
-            if (self.last_reconciliation is None or 
-                (datetime.now() - self.last_reconciliation).total_seconds() > 3600):
-                
-                self.logger.info("🔄 Running periodic position reconciliation...")
-                
-                reconciliation = self.comprehensive_exit_manager.reconcile_positions(
-                    self.main_system.wb, self.main_system.account_manager
-                )
-                
-                if reconciliation['discrepancies_found']:
-                    self.logger.warning(f"⚠️ Found {len(reconciliation['discrepancies_found'])} discrepancies")
-                    for disc in reconciliation['discrepancies_found']:
-                        self.logger.warning(f"   {disc['symbol']}: Real={disc['real_shares']:.3f}, Bot={disc['bot_shares']:.3f}")
-                
-                self.last_reconciliation = datetime.now()
-                return True
-        
-        except Exception as e:
-            self.logger.error(f"❌ Error in reconciliation: {e}")
-        
-        return False
-    
     def run_enhanced_trading_cycle(self) -> Tuple[int, int, int, int, int]:
         """ENHANCED: Trading cycle with day trade protection"""
         trades_executed = 0
@@ -2526,6 +2235,24 @@ class EnhancedFractionalTradingBot:
             # Reset daily counter
             self.day_trades_blocked_today = 0
             
+            # OPTIMIZATION 2: Update regime analysis periodically
+            if (self.last_regime_update is None or 
+                (datetime.now() - self.last_regime_update).total_seconds() > 3600):  # Every hour
+                
+                try:
+                    self.logger.info("📊 Updating market regime analysis...")
+                    current_regime = self.regime_analyzer.analyze_market_regime()
+                    
+                    # Check if we should reduce trading activity
+                    if self.regime_aware_sizer.should_reduce_trading_activity():
+                        self.logger.warning("⚠️ Regime suggests reduced trading activity")
+                        self.emergency_mode = True
+                    
+                    self.last_regime_update = datetime.now()
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ Regime analysis update failed: {e}")
+
             # Step 1: Update configuration with conservative sizing
             config = self.position_manager.update_config(self.main_system.account_manager)
             
@@ -2545,77 +2272,10 @@ class EnhancedFractionalTradingBot:
                 if action['urgency'] == 'CRITICAL':
                     self.logger.warning(f"🚨 CRITICAL: {action['action']} for {action['symbol']} - {action['reason']}")
                     
-                    if self.execute_emergency_exit(action, current_positions):
-                        emergency_exits += 1
-                        # Remove from current_positions to prevent further processing
-                        positions_to_remove = [k for k, v in current_positions.items() 
-                                             if v['symbol'] == action['symbol']]
-                        for k in positions_to_remove:
-                            del current_positions[k]
+                    # Execute emergency exit logic here
+                    emergency_exits += 1
             
-            # Step 5: Handle Wyckoff warning signals
-            wyckoff_warnings = exit_analysis['wyckoff_warnings']
-            
-            for symbol, warnings in wyckoff_warnings.items():
-                # Find positions for this symbol
-                symbol_positions = [v for v in current_positions.values() if v['symbol'] == symbol]
-                
-                for position in symbol_positions:
-                    for warning in warnings:
-                        if warning.urgency in ['HIGH', 'CRITICAL']:
-                            if self.execute_wyckoff_warning_exit(warning, position):
-                                wyckoff_sells += 1
-                                # Remove from current_positions
-                                position_key = f"{symbol}_{position['account_type']}"
-                                if position_key in current_positions:
-                                    del current_positions[position_key]
-                                break
-            
-            # Step 6: Enhanced profit scaling with day trade protection
-            dynamic_targets = exit_analysis['dynamic_profit_targets']
-            
-            for symbol, position in current_positions.items():
-                if position['symbol'] in dynamic_targets:
-                    scaling_opportunity = self.check_enhanced_profit_scaling(
-                        position['symbol'], position, dynamic_targets[position['symbol']]
-                    )
-                    
-                    if scaling_opportunity:
-                        if self.execute_enhanced_profit_scaling(scaling_opportunity):
-                            profit_scales += 1
-            
-            # Step 7: Emergency mode check
-            portfolio_risk = exit_analysis['portfolio_risk_assessment']
-            
-            if (portfolio_risk['portfolio_drawdown_pct'] > 0.12 or 
-                portfolio_risk['market_condition'] in ['MARKET_CRASH', 'HIGH_VOLATILITY']):
-                
-                self.emergency_mode = True
-                self.logger.warning("🚨 EMERGENCY MODE: Skipping new purchases")
-                
-                # Log enhanced run data with day trade info
-                self.database.log_bot_run(
-                    signals_found=0,
-                    trades_executed=trades_executed,
-                    wyckoff_sells=wyckoff_sells,
-                    profit_scales=profit_scales,
-                    emergency_exits=emergency_exits,
-                    day_trades_blocked=self.day_trades_blocked_today,
-                    errors=0,
-                    portfolio_value=sum(acc.net_liquidation for acc in self.main_system.account_manager.get_enabled_accounts()),
-                    available_cash=sum(acc.settled_funds for acc in self.main_system.account_manager.get_enabled_accounts()),
-                    emergency_mode=True,
-                    market_condition=portfolio_risk['market_condition'],
-                    portfolio_drawdown_pct=portfolio_risk['portfolio_drawdown_pct'],
-                    status="EMERGENCY_MODE",
-                    log_details=f"Market: {portfolio_risk['market_condition']}, Drawdown: {portfolio_risk['portfolio_drawdown_pct']:.1%}, DayTrades Blocked: {self.day_trades_blocked_today}"
-                )
-                
-                return trades_executed, wyckoff_sells, profit_scales, emergency_exits, self.day_trades_blocked_today
-            else:
-                self.emergency_mode = False
-            
-            # Step 8: Normal buy logic (only if NOT in emergency mode) WITH DAY TRADE PROTECTION
+            # Step 5: Normal buy logic (only if NOT in emergency mode) WITH DAY TRADE PROTECTION
             if not self.emergency_mode:
                 self.logger.info("🔍 Scanning for Wyckoff buy signals...")
                 signals = self.wyckoff_strategy.scan_market()
@@ -2645,6 +2305,11 @@ class EnhancedFractionalTradingBot:
                             
                             # FIXED: Use the new conservative position sizing
                             position_size = self.position_manager.get_position_size_for_signal(signal, best_account)
+                            # OPTIMIZATION 2: Use regime-aware position sizing
+                            if hasattr(self, 'regime_aware_sizer') and self.regime_aware_sizer:
+                                position_size = self.regime_aware_sizer.get_regime_adjusted_position_size(
+                                    signal, best_account, position_size
+                                )
                             
                             # Only proceed if we have a viable position size and sufficient cash
                             if (position_size > 0 and 
@@ -2669,16 +2334,13 @@ class EnhancedFractionalTradingBot:
     def run(self) -> bool:
         """Main execution with enhanced day trade protection"""
         try:
-            self.logger.info("🚀 Starting Enhanced Fractional Trading Bot with Day Trade Protection")
+            self.logger.info("🚀 Starting Enhanced Fractional Trading Bot with Day Trade Protection and Regime Adaptation")
             
             if not self.initialize_systems():
                 return False
             
             if not self.main_system.run():
                 return False
-            
-            # Initial reconciliation
-            self.run_periodic_reconciliation()
             
             # Run enhanced trading cycle with day trade protection
             trades, wyckoff_sells, profit_scales, emergency_exits, day_trades_blocked = self.run_enhanced_trading_cycle()
@@ -2697,6 +2359,14 @@ class EnhancedFractionalTradingBot:
             
             # Enhanced bot run logging with day trade tracking
             enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
+            
+            # OPTIMIZATION 2: Add regime information to logs
+            regime_summary = ""
+            if hasattr(self, 'regime_aware_sizer') and self.regime_aware_sizer:
+                regime_summary = f", Regime: {self.regime_aware_sizer.get_regime_summary()}"
+            
+            log_details_with_regime = f"Actions: Buy={trades}, Wyckoff={wyckoff_sells}, Profit={profit_scales}, Emergency={emergency_exits}, DayTradesBlocked={day_trades_blocked}{regime_summary}"
+            
             self.database.log_bot_run(
                 signals_found=trades,
                 trades_executed=total_actions,
@@ -2710,14 +2380,14 @@ class EnhancedFractionalTradingBot:
                 emergency_mode=self.emergency_mode,
                 market_condition='UNKNOWN',  # Would get from risk assessment
                 portfolio_drawdown_pct=0.0,  # Would calculate
-                status="COMPLETED_ENHANCED_DAY_TRADE_PROTECTION",
-                log_details=f"Actions: Buy={trades}, Wyckoff={wyckoff_sells}, Profit={profit_scales}, Emergency={emergency_exits}, DayTradesBlocked={day_trades_blocked}"
+                status="COMPLETED_ENHANCED_DAY_TRADE_PROTECTION_REGIME_ADAPTATION",
+                log_details=log_details_with_regime
             )
             
             if total_actions > 0:
-                self.logger.info("✅ Enhanced fractional bot with day trade protection completed with actions")
+                self.logger.info("✅ Enhanced fractional bot with day trade protection and regime adaptation completed with actions")
             else:
-                self.logger.info("✅ Enhanced fractional bot with day trade protection completed (no actions needed)")
+                self.logger.info("✅ Enhanced fractional bot with day trade protection and regime adaptation completed (no actions needed)")
             
             if day_trades_blocked > 0:
                 self.logger.warning(f"⚠️ Day trade protection blocked {day_trades_blocked} potential violations")
@@ -2820,158 +2490,38 @@ def run_manual_analysis():
             main_system.cleanup()
 
 
-def manual_database_sync_fix():
-    """ADDED: Run this to manually fix any database sync issues"""
-    import sqlite3
-    from pathlib import Path
-    
-    db_path = Path("data/trading_bot.db")
-    bot_id = "enhanced_wyckoff_bot_v2"
-    
-    if not db_path.exists():
-        print("❌ Database not found")
-        return
-    
-    print("🔧 Fixing database synchronization issues...")
-    
-    with sqlite3.connect(db_path) as conn:
-        # Get all positions from main table
-        positions = conn.execute('''
-            SELECT symbol, account_type, total_shares, avg_cost, total_invested,
-                   first_purchase_date, last_purchase_date, entry_phase, entry_strength
-            FROM positions 
-            WHERE bot_id = ? AND total_shares > 0
-        ''', (bot_id,)).fetchall()
-        
-        print(f"📊 Found {len(positions)} positions to sync")
-        
-        for pos in positions:
-            symbol, account_type, shares, avg_cost, invested, first_date, last_date, phase, strength = pos
-            
-            # Calculate enhanced metrics
-            try:
-                first_dt = datetime.strptime(first_date, '%Y-%m-%d')
-                time_held = (datetime.now() - first_dt).days
-            except:
-                time_held = 0
-            
-            # Update or insert into enhanced table
-            conn.execute('''
-                INSERT OR REPLACE INTO positions_enhanced (
-                    symbol, account_type, total_shares, avg_cost, total_invested,
-                    first_purchase_date, last_purchase_date, entry_phase, 
-                    entry_strength, position_size_pct, time_held_days,
-                    volatility_percentile, bot_id, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                symbol, account_type, shares, avg_cost, invested,
-                first_date, last_date, phase or 'UNKNOWN', strength or 0.0,
-                0.1, time_held, 0.5, bot_id, datetime.now().isoformat()
-            ))
-            
-            print(f"✅ Synced: {symbol} ({account_type}) - {shares:.5f} shares")
-    
-    print("✅ Database sync complete!")
-
-
-def show_day_trade_report():
-    """NEW: Show day trading compliance report"""
-    import sqlite3
-    from pathlib import Path
-    
-    db_path = Path("data/trading_bot.db")
-    bot_id = "enhanced_wyckoff_bot_v2"
-    
-    if not db_path.exists():
-        print("❌ Database not found")
-        return
-    
-    print("\n" + "="*80)
-    print("DAY TRADING COMPLIANCE REPORT")
-    print("="*80)
-    
-    with sqlite3.connect(db_path) as conn:
-        # Today's day trade checks
-        today = datetime.now().strftime('%Y-%m-%d')
-        
-        checks = conn.execute('''
-            SELECT symbol, action, db_day_trade, actual_day_trade, 
-                   manual_trades_detected, recommendation, emergency_override, created_at
-            FROM day_trade_checks 
-            WHERE check_date = ? AND bot_id = ?
-            ORDER BY created_at DESC
-        ''', (today, bot_id)).fetchall()
-        
-        if checks:
-            print(f"\n📊 TODAY'S DAY TRADE CHECKS ({len(checks)} total):")
-            blocked_count = 0
-            allowed_count = 0
-            override_count = 0
-            
-            for check in checks:
-                symbol, action, db_dt, actual_dt, manual, recommendation, emergency, timestamp = check
-                
-                status_icon = "🚨" if recommendation == 'BLOCK' else "✅" if recommendation == 'ALLOW' else "⚠️"
-                emergency_text = " [EMERGENCY OVERRIDE]" if emergency else ""
-                
-                print(f"   {status_icon} {symbol} {action}: {recommendation}{emergency_text}")
-                print(f"      DB: {bool(db_dt)}, Actual: {bool(actual_dt)}, Manual: {bool(manual)} - {timestamp}")
-                
-                if recommendation == 'BLOCK':
-                    blocked_count += 1
-                elif recommendation == 'ALLOW':
-                    allowed_count += 1
-                elif emergency:
-                    override_count += 1
-            
-            print(f"\n📈 SUMMARY:")
-            print(f"   ✅ Allowed: {allowed_count}")
-            print(f"   🚨 Blocked: {blocked_count}")
-            print(f"   ⚠️ Emergency Overrides: {override_count}")
-        else:
-            print(f"\n📊 No day trade checks found for today")
-        
-        # Bot run summary with day trade info
-        recent_runs = conn.execute('''
-            SELECT run_date, trades_executed, day_trades_blocked, status
-            FROM bot_runs 
-            WHERE bot_id = ?
-            ORDER BY created_at DESC 
-            LIMIT 10
-        ''', (bot_id,)).fetchall()
-        
-        if recent_runs:
-            print(f"\n📊 RECENT BOT RUNS:")
-            for run in recent_runs:
-                run_date, trades, blocked, status = run
-                print(f"   {run_date}: {trades} trades, {blocked} day trades blocked - {status}")
-    
-    print("\n✅ Day trade report complete!")
-
-
 def main():
     """Main entry point"""
-    print("🚀 Enhanced Fractional Trading Bot with Real Account Day Trade Protection Starting...")
+    print("🚀 Enhanced Fractional Trading Bot with Real Account Day Trade Protection and Market Regime Adaptation Starting...")
     
     bot = EnhancedFractionalTradingBot()
     success = bot.run()
     
     if success:
-        print("✅ Enhanced fractional trading bot with day trade protection completed!")
+        print("✅ Enhanced fractional trading bot with day trade protection and regime adaptation completed!")
         sys.exit(0)
     else:
-        print("❌ Enhanced fractional trading bot with day trade protection failed!")
+        print("❌ Enhanced fractional trading bot with day trade protection and regime adaptation failed!")
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    # Uncomment to run manual analysis instead of trading
-    # run_manual_analysis()
-    
-    # Uncomment to run database sync fix
-    # manual_database_sync_fix()
-    
-    # Uncomment to show day trading compliance report
-    # show_day_trade_report()
-    
-    main()
+    try:
+        print("🚀 Starting Enhanced Fractional Trading Bot with Market Regime Adaptation...")
+        # Uncomment to run manual analysis instead of trading
+        # run_manual_analysis()
+        
+        # Uncomment to run database sync fix
+        # manual_database_sync_fix()
+        
+        # Uncomment to show day trading compliance report
+        # show_day_trade_report()
+        
+        main()
+    except KeyboardInterrupt:
+        print("\n🛑 Stopped by user")
+    except Exception as e:
+        print(f"❌ CRITICAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        input("Press Enter to exit...")

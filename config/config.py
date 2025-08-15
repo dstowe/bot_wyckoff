@@ -91,6 +91,66 @@ class PersonalTradingConfig:
         'META', 'NVDA', 'NFLX', 'SPY', 'QQQ'
     ]
     
+        
+    # OPTIMIZATION 2: Market Regime Analysis Configuration
+    REGIME_ANALYSIS = {
+        'enabled': True,
+        'update_frequency_hours': 1,
+        'trend_ma_fast': 50,
+        'trend_ma_slow': 200,
+        'vix_thresholds': {
+            'low': 20.0,
+            'medium': 25.0,
+            'high': 40.0,
+            'crisis': 50.0
+        },
+        'position_adjustments': {
+            'bear_market_reduction': 0.5,
+            'high_vol_scaling_base': 30.0,
+            'sector_weight_boost': 1.5
+        }
+    }
+    
+        
+    # OPTIMIZATION 2: Market Regime Analysis Configuration
+    REGIME_ANALYSIS = {
+        'enabled': True,
+        'update_frequency_hours': 1,
+        'trend_ma_fast': 50,
+        'trend_ma_slow': 200,
+        'vix_thresholds': {
+            'low': 20.0,
+            'medium': 25.0,
+            'high': 40.0,
+            'crisis': 50.0
+        },
+        'position_adjustments': {
+            'bear_market_reduction': 0.5,
+            'high_vol_scaling_base': 30.0,
+            'sector_weight_boost': 1.5
+        }
+    }
+    
+        
+    # OPTIMIZATION 2: Market Regime Analysis Configuration
+    REGIME_ANALYSIS = {
+        'enabled': True,
+        'update_frequency_hours': 1,
+        'trend_ma_fast': 50,
+        'trend_ma_slow': 200,
+        'vix_thresholds': {
+            'low': 20.0,
+            'medium': 25.0,
+            'high': 40.0,
+            'crisis': 50.0
+        },
+        'position_adjustments': {
+            'bear_market_reduction': 0.5,
+            'high_vol_scaling_base': 30.0,
+            'sector_weight_boost': 1.5
+        }
+    }
+    
     def __init__(self):
         """Initialize configuration"""
         pass
