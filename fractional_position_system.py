@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-COMPLETE ENHANCED FRACTIONAL POSITION BUILDING SYSTEM - FIXED VERSION
-Integrates all advanced exit management, Wyckoff warnings, and portfolio protection
-This is the complete replacement for fractional_position_system.py with ALL fixes applied
+COMPLETE ENHANCED FRACTIONAL POSITION BUILDING SYSTEM - WITH REAL ACCOUNT DAY TRADE PROTECTION
+Integrates all advanced exit management, Wyckoff warnings, portfolio protection, and REAL account day trade checking
+This version checks ACTUAL Webull account trades, not just database records
 """
 
 import sys
@@ -48,6 +48,226 @@ class PositionRisk:
     entry_phase: str
     volatility_percentile: float
     recommended_action: str
+
+
+@dataclass
+class DayTradeCheckResult:
+    """Day trade compliance check result"""
+    symbol: str
+    action: str
+    would_be_day_trade: bool
+    db_trades_today: List[Dict]
+    actual_trades_today: List[Dict]
+    manual_trades_detected: bool
+    recommendation: str  # 'ALLOW', 'BLOCK', 'EMERGENCY_OVERRIDE'
+    details: str
+
+
+class RealAccountDayTradeChecker:
+    """REAL account day trade checking using Webull API"""
+    
+    def __init__(self, logger):
+        self.logger = logger
+        self.trade_cache = {}  # Cache to avoid repeated API calls
+        self.last_cache_update = None
+    
+    def get_actual_todays_trades(self, wb_client, symbol: str = None) -> List[Dict]:
+        """Get TODAY'S trades from actual Webull account with caching"""
+        today = datetime.now().strftime('%Y-%m-%d')
+        cache_key = f"{today}_{symbol or 'ALL'}"
+        
+        # Use cache if updated within last 5 minutes
+        if (self.last_cache_update and 
+            cache_key in self.trade_cache and
+            (datetime.now() - self.last_cache_update).total_seconds() < 300):
+            return self.trade_cache[cache_key]
+        
+        try:
+            self.logger.debug(f"🔍 Fetching real account trades for {symbol or 'ALL'}")
+            
+            # Get actual trade history from Webull
+            # Note: This uses Webull's order history methods
+            orders = []
+            
+            try:
+                # Get today's orders using Webull API
+                orders_data = wb_client.get_current_orders()  # Gets pending orders
+                history_data = wb_client.get_order_history()  # Gets historical orders
+                
+                # Combine and filter for today
+                all_orders = []
+                if orders_data:
+                    all_orders.extend(orders_data)
+                if history_data:
+                    all_orders.extend(history_data)
+                
+                # Filter for today's trades
+                today_orders = []
+                for order in all_orders:
+                    try:
+                        # Parse order date - handle different date formats
+                        order_date = order.get('orderDate', order.get('createTime', ''))
+                        if order_date:
+                            # Convert to date string for comparison
+                            if isinstance(order_date, str):
+                                # Handle timestamps or date strings
+                                if len(order_date) > 10:  # Timestamp
+                                    order_dt = datetime.fromtimestamp(int(order_date) / 1000)
+                                else:  # Date string
+                                    order_dt = datetime.strptime(order_date, '%Y-%m-%d')
+                            else:
+                                order_dt = datetime.fromtimestamp(order_date / 1000)
+                            
+                            order_date_str = order_dt.strftime('%Y-%m-%d')
+                            
+                            # Only include today's FILLED orders
+                            if (order_date_str == today and 
+                                order.get('status', '').upper() in ['FILLED', 'PARTIALLY_FILLED']):
+                                
+                                parsed_order = {
+                                    'symbol': order.get('ticker', order.get('symbol', '')),
+                                    'action': order.get('action', '').upper(),
+                                    'quantity': float(order.get('filledQuantity', order.get('quantity', 0))),
+                                    'price': float(order.get('avgFilledPrice', order.get('price', 0))),
+                                    'time': order_date_str,
+                                    'order_id': order.get('orderId', ''),
+                                    'status': order.get('status', '')
+                                }
+                                
+                                # Filter by symbol if specified
+                                if not symbol or parsed_order['symbol'] == symbol:
+                                    today_orders.append(parsed_order)
+                                    
+                    except Exception as e:
+                        self.logger.debug(f"Error parsing order: {e}")
+                        continue
+                
+                orders = today_orders
+                
+            except Exception as e:
+                self.logger.warning(f"⚠️ Could not get Webull order history: {e}")
+                orders = []
+            
+            # Cache the results
+            self.trade_cache[cache_key] = orders
+            self.last_cache_update = datetime.now()
+            
+            if orders:
+                self.logger.debug(f"📊 Found {len(orders)} real trades today for {symbol or 'ALL'}")
+                for order in orders:
+                    self.logger.debug(f"   {order['action']} {order['quantity']:.5f} {order['symbol']} @ ${order['price']:.2f}")
+            else:
+                self.logger.debug(f"📊 No real trades found today for {symbol or 'ALL'}")
+            
+            return orders
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error getting actual trades: {e}")
+            return []
+    
+    def detect_manual_trades(self, wb_client, database, symbol: str) -> bool:
+        """Detect if manual trades occurred by comparing positions"""
+        try:
+            # Get database position
+            db_position = database.get_position(symbol)
+            if not db_position:
+                return False
+            
+            # Get real position from account
+            try:
+                # This would use Webull's position API
+                account_manager = getattr(wb_client, 'account_manager', None)
+                if not account_manager:
+                    return False
+                
+                enabled_accounts = account_manager.get_enabled_accounts()
+                real_total_shares = 0
+                
+                for account in enabled_accounts:
+                    for position in account.positions:
+                        if position['symbol'] == symbol:
+                            real_total_shares += position['quantity']
+                
+                # Compare with database total (across all accounts)
+                if isinstance(db_position, list):
+                    db_total_shares = sum(pos['total_shares'] for pos in db_position)
+                else:
+                    db_total_shares = db_position['total_shares']
+                
+                # If there's a significant difference, manual trades likely occurred
+                if abs(real_total_shares - db_total_shares) > 0.001:
+                    self.logger.warning(f"⚠️ Position mismatch for {symbol}: Real={real_total_shares:.5f}, DB={db_total_shares:.5f}")
+                    return True
+                    
+            except Exception as e:
+                self.logger.debug(f"Error checking position mismatch: {e}")
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error detecting manual trades: {e}")
+            return False
+    
+    def comprehensive_day_trade_check(self, wb_client, database, symbol: str, action: str, 
+                                    emergency: bool = False) -> DayTradeCheckResult:
+        """Comprehensive day trade check using multiple sources"""
+        
+        # Check 1: Database trades
+        db_trades = database.get_todays_trades(symbol)
+        db_day_trade = database.would_create_day_trade(symbol, action)
+        
+        # Check 2: Actual account trades
+        actual_trades = self.get_actual_todays_trades(wb_client, symbol)
+        
+        # Analyze actual trades for day trade potential
+        actual_day_trade = False
+        if actual_trades:
+            buys_today = sum(1 for trade in actual_trades if trade['action'] in ['BUY', 'buy'])
+            sells_today = sum(1 for trade in actual_trades if trade['action'] in ['SELL', 'sell'])
+            
+            if action.upper() == 'SELL' and buys_today > 0:
+                actual_day_trade = True
+            elif action.upper() == 'BUY' and sells_today > 0:
+                actual_day_trade = True
+        
+        # Check 3: Manual trades detection
+        manual_trades_detected = self.detect_manual_trades(wb_client, database, symbol)
+        
+        # Determine final recommendation
+        would_be_day_trade = db_day_trade or actual_day_trade
+        
+        if emergency:
+            recommendation = 'EMERGENCY_OVERRIDE'
+            details = f"Emergency override: allowing potential day trade for {symbol}"
+        elif would_be_day_trade or manual_trades_detected:
+            recommendation = 'BLOCK'
+            details = f"Day trade detected - DB: {db_day_trade}, Actual: {actual_day_trade}, Manual: {manual_trades_detected}"
+        else:
+            recommendation = 'ALLOW'
+            details = f"No day trade violation detected for {symbol}"
+        
+        result = DayTradeCheckResult(
+            symbol=symbol,
+            action=action,
+            would_be_day_trade=would_be_day_trade,
+            db_trades_today=db_trades,
+            actual_trades_today=actual_trades,
+            manual_trades_detected=manual_trades_detected,
+            recommendation=recommendation,
+            details=details
+        )
+        
+        # Log the analysis
+        if would_be_day_trade or manual_trades_detected:
+            self.logger.warning(f"🚨 DAY TRADE CHECK: {symbol} {action}")
+            self.logger.warning(f"   DB trades today: {len(db_trades)}")
+            self.logger.warning(f"   Actual trades today: {len(actual_trades)}")
+            self.logger.warning(f"   Manual trades detected: {manual_trades_detected}")
+            self.logger.warning(f"   Recommendation: {recommendation}")
+        else:
+            self.logger.debug(f"✅ Day trade check passed: {symbol} {action}")
+        
+        return result
 
 
 class EnhancedTradingDatabase:
@@ -98,6 +318,7 @@ class EnhancedTradingDatabase:
                     account_type TEXT,
                     order_id TEXT,
                     status TEXT DEFAULT 'PENDING',
+                    day_trade_check TEXT,
                     bot_id TEXT DEFAULT 'enhanced_wyckoff_bot_v2',
                     trade_datetime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -140,6 +361,24 @@ class EnhancedTradingDatabase:
                     bot_id TEXT DEFAULT 'enhanced_wyckoff_bot_v2',
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (symbol, account_type, bot_id)
+                )
+            ''')
+            
+            # Day trade tracking table
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS day_trade_checks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    check_date TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    db_day_trade BOOLEAN NOT NULL,
+                    actual_day_trade BOOLEAN NOT NULL,
+                    manual_trades_detected BOOLEAN NOT NULL,
+                    recommendation TEXT NOT NULL,
+                    details TEXT,
+                    emergency_override BOOLEAN DEFAULT FALSE,
+                    bot_id TEXT DEFAULT 'enhanced_wyckoff_bot_v2',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
             
@@ -195,6 +434,7 @@ class EnhancedTradingDatabase:
                     wyckoff_sells INTEGER DEFAULT 0,
                     profit_scales INTEGER DEFAULT 0,
                     emergency_exits INTEGER DEFAULT 0,
+                    day_trades_blocked INTEGER DEFAULT 0,
                     errors_encountered INTEGER NOT NULL,
                     total_portfolio_value REAL,
                     available_cash REAL,
@@ -214,6 +454,28 @@ class EnhancedTradingDatabase:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_positions_bot_id ON positions(bot_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_positions_enhanced_bot_id ON positions_enhanced(bot_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_partial_sales_symbol ON partial_sales(symbol, sale_date)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_day_trade_checks_date ON day_trade_checks(check_date, symbol)')
+    
+    def log_day_trade_check(self, check_result: DayTradeCheckResult, emergency_override: bool = False):
+        """Log day trade compliance check"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute('''
+                INSERT INTO day_trade_checks (check_date, symbol, action, db_day_trade, 
+                                            actual_day_trade, manual_trades_detected, 
+                                            recommendation, details, emergency_override, bot_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                datetime.now().strftime('%Y-%m-%d'),
+                check_result.symbol,
+                check_result.action,
+                check_result.would_be_day_trade,
+                len(check_result.actual_trades_today) > 0,
+                check_result.manual_trades_detected,
+                check_result.recommendation,
+                check_result.details,
+                emergency_override,
+                self.bot_id
+            ))
     
     def log_signal(self, signal: WyckoffSignal, action_taken: str = None):
         """Log a trading signal"""
@@ -237,13 +499,14 @@ class EnhancedTradingDatabase:
     
     def log_trade(self, symbol: str, action: str, quantity: float, price: float, 
                   signal_phase: str, signal_strength: float, account_type: str, 
-                  order_id: str = None):
-        """Log a trade execution"""
+                  order_id: str = None, day_trade_check: str = None):
+        """Log a trade execution with day trade check info"""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute('''
                 INSERT INTO trades (date, symbol, action, quantity, price, total_value, 
-                                  signal_phase, signal_strength, account_type, order_id, bot_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  signal_phase, signal_strength, account_type, order_id, 
+                                  day_trade_check, bot_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 datetime.now().strftime('%Y-%m-%d'),
                 symbol,
@@ -255,6 +518,7 @@ class EnhancedTradingDatabase:
                 signal_strength,
                 account_type,
                 order_id,
+                day_trade_check,
                 self.bot_id
             ))
     
@@ -516,12 +780,12 @@ class EnhancedTradingDatabase:
             
             columns = ['id', 'date', 'symbol', 'action', 'quantity', 'price', 'total_value',
                       'signal_phase', 'signal_strength', 'account_type', 'order_id', 'status',
-                      'bot_id', 'trade_datetime', 'created_at']
+                      'day_trade_check', 'bot_id', 'trade_datetime', 'created_at']
             
             return [dict(zip(columns, row)) for row in results]
     
     def would_create_day_trade(self, symbol: str, action: str) -> bool:
-        """Check if this trade would create a day trade"""
+        """Check if this trade would create a day trade (DATABASE ONLY)"""
         today_trades = self.get_todays_trades(symbol)
         
         if not today_trades:
@@ -540,78 +804,24 @@ class EnhancedTradingDatabase:
         return False
     
     def log_bot_run(self, signals_found: int, trades_executed: int, wyckoff_sells: int = 0,
-                    profit_scales: int = 0, emergency_exits: int = 0, errors: int = 0, 
-                    portfolio_value: float = 0, available_cash: float = 0, emergency_mode: bool = False,
-                    market_condition: str = "NORMAL", portfolio_drawdown_pct: float = 0.0,
-                    status: str = "COMPLETED", log_details: str = ""):
-        """Log enhanced bot run statistics"""
+                    profit_scales: int = 0, emergency_exits: int = 0, day_trades_blocked: int = 0,
+                    errors: int = 0, portfolio_value: float = 0, available_cash: float = 0, 
+                    emergency_mode: bool = False, market_condition: str = "NORMAL", 
+                    portfolio_drawdown_pct: float = 0.0, status: str = "COMPLETED", log_details: str = ""):
+        """Log enhanced bot run statistics with day trade blocking"""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute('''
                 INSERT INTO bot_runs (run_date, signals_found, trades_executed, wyckoff_sells,
-                                    profit_scales, emergency_exits, errors_encountered, 
+                                    profit_scales, emergency_exits, day_trades_blocked, errors_encountered, 
                                     total_portfolio_value, available_cash, emergency_mode,
                                     market_condition, portfolio_drawdown_pct, status, log_details, bot_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 signals_found, trades_executed, wyckoff_sells, profit_scales, emergency_exits,
-                errors, portfolio_value, available_cash, emergency_mode, market_condition,
-                portfolio_drawdown_pct, status, log_details, self.bot_id
+                day_trades_blocked, errors, portfolio_value, available_cash, emergency_mode, 
+                market_condition, portfolio_drawdown_pct, status, log_details, self.bot_id
             ))
-
-
-def manual_database_sync_fix():
-    """ADDED: Run this to manually fix any database sync issues"""
-    import sqlite3
-    from pathlib import Path
-    
-    db_path = Path("data/trading_bot.db")
-    bot_id = "enhanced_wyckoff_bot_v2"
-    
-    if not db_path.exists():
-        print("❌ Database not found")
-        return
-    
-    print("🔧 Fixing database synchronization issues...")
-    
-    with sqlite3.connect(db_path) as conn:
-        # Get all positions from main table
-        positions = conn.execute('''
-            SELECT symbol, account_type, total_shares, avg_cost, total_invested,
-                   first_purchase_date, last_purchase_date, entry_phase, entry_strength
-            FROM positions 
-            WHERE bot_id = ? AND total_shares > 0
-        ''', (bot_id,)).fetchall()
-        
-        print(f"📊 Found {len(positions)} positions to sync")
-        
-        for pos in positions:
-            symbol, account_type, shares, avg_cost, invested, first_date, last_date, phase, strength = pos
-            
-            # Calculate enhanced metrics
-            try:
-                first_dt = datetime.strptime(first_date, '%Y-%m-%d')
-                time_held = (datetime.now() - first_dt).days
-            except:
-                time_held = 0
-            
-            # Update or insert into enhanced table
-            conn.execute('''
-                INSERT OR REPLACE INTO positions_enhanced (
-                    symbol, account_type, total_shares, avg_cost, total_invested,
-                    first_purchase_date, last_purchase_date, entry_phase, 
-                    entry_strength, position_size_pct, time_held_days,
-                    volatility_percentile, bot_id, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                symbol, account_type, shares, avg_cost, invested,
-                first_date, last_date, phase or 'UNKNOWN', strength or 0.0,
-                0.1, time_held, 0.5, bot_id, datetime.now().isoformat()
-            ))
-            
-            print(f"✅ Synced: {symbol} ({account_type}) - {shares:.5f} shares")
-    
-    print("✅ Database sync complete!")
 
 
 class EnhancedWyckoffAnalyzer:
@@ -1513,7 +1723,7 @@ class ComprehensiveExitManager:
 
 
 class EnhancedFractionalTradingBot:
-    """DEFINITIVE: Complete enhanced fractional trading bot with ALL features FIXED"""
+    """DEFINITIVE: Complete enhanced fractional trading bot with REAL ACCOUNT DAY TRADE PROTECTION"""
     
     def __init__(self):
         self.logger = None
@@ -1524,10 +1734,12 @@ class EnhancedFractionalTradingBot:
         self.dynamic_manager = None
         self.position_manager = None
         self.comprehensive_exit_manager = None
+        self.day_trade_checker = None  # NEW: Real account day trade checker
         
         # Enhanced features
         self.emergency_mode = False
         self.last_reconciliation = None
+        self.day_trades_blocked_today = 0  # NEW: Track blocked day trades
         
         # Trading parameters
         self.min_signal_strength = 0.5
@@ -1547,14 +1759,15 @@ class EnhancedFractionalTradingBot:
         )
         
         self.logger = logging.getLogger(__name__)
-        self.logger.info("🚀 ENHANCED FRACTIONAL TRADING BOT - FIXED VERSION")
+        self.logger.info("🚀 ENHANCED FRACTIONAL TRADING BOT - WITH REAL ACCOUNT DAY TRADE PROTECTION")
         self.logger.info("💰 Conservative position sizing + Advanced Wyckoff exits")
         self.logger.info("🛡️ Portfolio protection + Position reconciliation")
+        self.logger.info("🚨 REAL account day trading protection + Compliance tracking")
     
     def initialize_systems(self) -> bool:
-        """Initialize all enhanced systems"""
+        """Initialize all enhanced systems including day trade protection"""
         try:
-            self.logger.info("🔧 Initializing enhanced systems...")
+            self.logger.info("🔧 Initializing enhanced systems with day trade protection...")
             
             self.main_system = MainSystem()
             self.wyckoff_strategy = WyckoffPnFStrategy()
@@ -1570,12 +1783,21 @@ class EnhancedFractionalTradingBot:
                 self.database, self.logger
             )
             
-            self.logger.info("✅ Enhanced systems initialized")
+            # NEW: Initialize real account day trade checker
+            self.day_trade_checker = RealAccountDayTradeChecker(self.logger)
+            
+            self.logger.info("✅ Enhanced systems with day trade protection initialized")
             return True
             
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize: {e}")
             return False
+    
+    def _check_day_trade_compliance(self, symbol: str, action: str, emergency: bool = False) -> DayTradeCheckResult:
+        """NEW: Check comprehensive day trading compliance"""
+        return self.day_trade_checker.comprehensive_day_trade_check(
+            self.main_system.wb, self.database, symbol, action, emergency
+        )
     
     def get_current_positions(self) -> Dict[str, Dict]:
         """Get current positions from database"""
@@ -1607,8 +1829,22 @@ class EnhancedFractionalTradingBot:
             return False    
         
     def execute_buy_order(self, signal: WyckoffSignal, account, position_size: float) -> bool:
-        """FIXED: Execute buy order with strict cash validation and fractional handling"""
+        """ENHANCED: Execute buy order with DAY TRADE PROTECTION and strict cash validation"""
         try:
+            # STEP 1: DAY TRADE COMPLIANCE CHECK
+            day_trade_check = self._check_day_trade_compliance(signal.symbol, 'BUY')
+            
+            # Log the check
+            self.database.log_day_trade_check(day_trade_check)
+            
+            if day_trade_check.recommendation == 'BLOCK':
+                self.logger.warning(f"🚨 DAY TRADE BLOCKED: {signal.symbol} BUY - {day_trade_check.details}")
+                self.day_trades_blocked_today += 1
+                return False
+            elif day_trade_check.would_be_day_trade:
+                self.logger.warning(f"⚠️ Day trade detected but proceeding: {day_trade_check.details}")
+            
+            # STEP 2: Account switching and cash validation
             if not self.main_system.account_manager.switch_to_account(account):
                 self.logger.error(f"❌ Failed to switch to account for {signal.symbol}")
                 return False
@@ -1623,7 +1859,7 @@ class EnhancedFractionalTradingBot:
                 self.logger.warning(f"   Available: ${available_cash:.2f}")
                 return False
             
-            # Check and refresh session before critical operations
+            # STEP 3: Session validation and quote retrieval
             if not self._ensure_valid_session():
                 self.logger.error(f"❌ Cannot establish valid session for {signal.symbol}")
                 return False
@@ -1655,9 +1891,11 @@ class EnhancedFractionalTradingBot:
                 self.logger.error(f"❌ COST VALIDATION FAILED: ${actual_cost:.2f} > ${available_cash - min_buffer:.2f}")
                 return False
             
+            # STEP 4: Execute the order
             self.logger.info(f"💰 Buying {shares_to_buy:.5f} shares of {signal.symbol}")
             self.logger.info(f"   Price: ${current_price:.2f}, Cost: ${actual_cost:.2f}")
             self.logger.info(f"   Cash before: ${available_cash:.2f}, Will remain: ${available_cash - actual_cost:.2f}")
+            self.logger.info(f"   Day Trade Check: {day_trade_check.recommendation}")
             
             # Ensure session is still valid before placing order
             if not self._ensure_valid_session():
@@ -1677,7 +1915,7 @@ class EnhancedFractionalTradingBot:
             if order_result.get('success', False):
                 order_id = order_result.get('orderId', 'UNKNOWN')
                 
-                # Enhanced logging
+                # Enhanced logging with day trade info
                 self.database.log_signal(signal, 'BUY_EXECUTED')
                 self.database.log_trade(
                     symbol=signal.symbol,
@@ -1687,7 +1925,8 @@ class EnhancedFractionalTradingBot:
                     signal_phase=signal.phase,
                     signal_strength=signal.strength,
                     account_type=account.account_type,
-                    order_id=order_id
+                    order_id=order_id,
+                    day_trade_check=day_trade_check.recommendation
                 )
                 
                 # FIXED: Enhanced position tracking WITH ACCOUNT TYPE
@@ -1723,31 +1962,45 @@ class EnhancedFractionalTradingBot:
 
     
     def execute_emergency_exit(self, action: Dict, current_positions: Dict) -> bool:
-        """Execute emergency exits"""
-        try:
-            if action['action'] == 'LIQUIDATE_ALL':
-                self.logger.critical("🚨 LIQUIDATING ALL POSITIONS - MARKET CRASH")
-                success_count = 0
-                for symbol, position in current_positions.items():
-                    if self._emergency_liquidate_position(position['symbol'], position):
-                        success_count += 1
-                return success_count > 0
+            """Execute emergency exits WITH day trade compliance"""
+            try:
+                if action['action'] == 'LIQUIDATE_ALL':
+                    self.logger.critical("🚨 LIQUIDATING ALL POSITIONS - MARKET CRASH")
+                    success_count = 0
+                    for symbol, position in current_positions.items():
+                        if self._emergency_liquidate_position(position['symbol'], position, emergency=True):
+                            success_count += 1
+                    return success_count > 0
+                    
+                elif action['symbol'] in [p['symbol'] for p in current_positions.values()]:
+                    # Find the position
+                    target_position = next((p for p in current_positions.values() 
+                                        if p['symbol'] == action['symbol']), None)
+                    if target_position:
+                        return self._emergency_liquidate_position(action['symbol'], target_position, emergency=True)
                 
-            elif action['symbol'] in [p['symbol'] for p in current_positions.values()]:
-                # Find the position
-                target_position = next((p for p in current_positions.values() 
-                                      if p['symbol'] == action['symbol']), None)
-                if target_position:
-                    return self._emergency_liquidate_position(action['symbol'], target_position)
+            except Exception as e:
+                self.logger.error(f"❌ Error executing emergency action: {e}")
             
-        except Exception as e:
-            self.logger.error(f"❌ Error executing emergency action: {e}")
-        
-        return False
+            return False
     
-    def _emergency_liquidate_position(self, symbol: str, position: Dict) -> bool:
-        """Emergency liquidation of single position with fractional share handling"""
+    def _emergency_liquidate_position(self, symbol: str, position: Dict, emergency: bool = False) -> bool:
+        """Emergency liquidation with day trade protection and emergency override"""
         try:
+            # STEP 1: Day trade compliance check with emergency override
+            day_trade_check = self._check_day_trade_compliance(symbol, 'SELL', emergency=emergency)
+            
+            # Log the check
+            self.database.log_day_trade_check(day_trade_check, emergency_override=emergency)
+            
+            if day_trade_check.recommendation == 'BLOCK' and not emergency:
+                self.logger.warning(f"🚨 EMERGENCY EXIT BLOCKED BY DAY TRADE RULES: {symbol}")
+                self.logger.warning(f"   {day_trade_check.details}")
+                self.day_trades_blocked_today += 1
+                return False
+            elif day_trade_check.would_be_day_trade:
+                self.logger.critical(f"🚨 EMERGENCY OVERRIDE: Day trade rules overridden for {symbol}")
+            
             enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
             account = next((acc for acc in enabled_accounts 
                            if acc.account_type == position['account_type']), None)
@@ -1758,6 +2011,7 @@ class EnhancedFractionalTradingBot:
             total_shares_to_sell = position['shares']
             
             self.logger.critical(f"🚨 EMERGENCY EXIT: {total_shares_to_sell:.5f} shares of {symbol}")
+            self.logger.critical(f"   Day Trade Status: {day_trade_check.recommendation}")
             
             # FIXED: Handle fractional share restrictions for emergency exits
             orders_executed = 0
@@ -1831,7 +2085,8 @@ class EnhancedFractionalTradingBot:
                     signal_phase='EMERGENCY',
                     signal_strength=1.0,
                     account_type=account.account_type,
-                    order_id=f"EMERGENCY_{orders_executed}_ORDERS"
+                    order_id=f"EMERGENCY_{orders_executed}_ORDERS",
+                    day_trade_check=day_trade_check.recommendation
                 )
                 
                 self.database.update_position(
@@ -1855,8 +2110,25 @@ class EnhancedFractionalTradingBot:
         return False
     
     def execute_wyckoff_warning_exit(self, warning: WyckoffWarningSignal, position: Dict) -> bool:
-        """Execute exit based on Wyckoff warning with fractional share handling"""
+        """Execute Wyckoff warning exit with day trade protection"""
         try:
+            # STEP 1: Day trade compliance check
+            day_trade_check = self._check_day_trade_compliance(warning.symbol, 'SELL')
+            
+            # Log the check
+            self.database.log_day_trade_check(day_trade_check)
+            
+            # Allow critical Wyckoff warnings to override day trade rules
+            emergency_override = warning.urgency == 'CRITICAL'
+            
+            if day_trade_check.recommendation == 'BLOCK' and not emergency_override:
+                self.logger.warning(f"🚨 WYCKOFF EXIT BLOCKED BY DAY TRADE RULES: {warning.symbol}")
+                self.logger.warning(f"   {day_trade_check.details}")
+                self.day_trades_blocked_today += 1
+                return False
+            elif day_trade_check.would_be_day_trade and emergency_override:
+                self.logger.warning(f"🚨 CRITICAL WYCKOFF OVERRIDE: Day trade rules overridden for {warning.symbol}")
+            
             enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
             account = next((acc for acc in enabled_accounts 
                            if acc.account_type == position['account_type']), None)
@@ -1870,6 +2142,7 @@ class EnhancedFractionalTradingBot:
             self.logger.warning(f"   Signal: {warning.signal_type} (Strength: {warning.strength:.2f})")
             self.logger.warning(f"   Context: {warning.context}")
             self.logger.warning(f"   Selling: {total_shares_to_sell:.5f} shares")
+            self.logger.warning(f"   Day Trade Status: {day_trade_check.recommendation}")
             
             # FIXED: Handle fractional share restrictions for Wyckoff exits
             orders_executed = 0
@@ -1943,7 +2216,8 @@ class EnhancedFractionalTradingBot:
                     signal_phase=warning.signal_type,
                     signal_strength=warning.strength,
                     account_type=account.account_type,
-                    order_id=f"WYCKOFF_{orders_executed}_ORDERS"
+                    order_id=f"WYCKOFF_{orders_executed}_ORDERS",
+                    day_trade_check=day_trade_check.recommendation
                 )
                 
                 self.database.update_position(
@@ -1967,8 +2241,15 @@ class EnhancedFractionalTradingBot:
         return False
     
     def check_enhanced_profit_scaling(self, symbol: str, position: Dict, dynamic_targets: List[Dict]) -> Optional[Dict]:
-        """FIXED: Check for profit scaling with conservative fractional share handling"""
+        """FIXED: Check for profit scaling with day trade protection"""
         try:
+            # STEP 1: Day trade compliance check for potential sale
+            day_trade_check = self._check_day_trade_compliance(symbol, 'SELL')
+            
+            if day_trade_check.recommendation == 'BLOCK':
+                self.logger.debug(f"🚨 Profit scaling blocked by day trade rules: {symbol}")
+                return None
+            
             quote_data = self.main_system.wb.get_quote(symbol)
             if not quote_data or 'close' not in quote_data:
                 return None
@@ -2003,6 +2284,7 @@ class EnhancedFractionalTradingBot:
                             self.logger.info(f"💰 Profit scaling opportunity: {symbol}")
                             self.logger.info(f"   Sell {shares_to_sell:.5f} of {total_shares:.5f} shares ({conservative_sell_pct:.1%})")
                             self.logger.info(f"   Gain: {gain_pct:.1%}, Value: ${sale_value:.2f}")
+                            self.logger.info(f"   Day Trade Status: {day_trade_check.recommendation}")
                             
                             return {
                                 'symbol': symbol,
@@ -2014,7 +2296,8 @@ class EnhancedFractionalTradingBot:
                                 'description': f"Conservative {conservative_sell_pct:.1%} scale at {gain_pct:.1%} gain",
                                 'remaining_shares': remaining_shares,
                                 'account_type': position['account_type'],
-                                'scaling_level': f"{target['gain_pct']*100:.0f}PCT"
+                                'scaling_level': f"{target['gain_pct']*100:.0f}PCT",
+                                'day_trade_check': day_trade_check
                             }
                         else:
                             self.logger.debug(f"Sale too small for {symbol}: ${sale_value:.2f}, {shares_to_sell:.5f} shares")
@@ -2027,8 +2310,20 @@ class EnhancedFractionalTradingBot:
             return None
     
     def execute_enhanced_profit_scaling(self, opportunity: Dict) -> bool:
-        """Execute profit scaling with enhanced tracking and fractional share handling"""
+        """Execute profit scaling with day trade protection"""
         try:
+            # Day trade check was already done in check_enhanced_profit_scaling
+            day_trade_check = opportunity.get('day_trade_check')
+            
+            # Log the day trade check for scaling
+            if day_trade_check:
+                self.database.log_day_trade_check(day_trade_check)
+            
+            if day_trade_check and day_trade_check.recommendation == 'BLOCK':
+                self.logger.warning(f"🚨 PROFIT SCALING BLOCKED BY DAY TRADE RULES: {opportunity['symbol']}")
+                self.day_trades_blocked_today += 1
+                return False
+            
             enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
             account = next((acc for acc in enabled_accounts 
                         if acc.account_type == opportunity['account_type']), None)
@@ -2046,6 +2341,8 @@ class EnhancedFractionalTradingBot:
             
             self.logger.info(f"💰 Enhanced Profit Scaling: {total_shares_to_sell:.5f} shares of {symbol}")
             self.logger.info(f"   {opportunity['description']} (${opportunity['profit_amount']:.2f} profit)")
+            if day_trade_check:
+                self.logger.info(f"   Day Trade Status: {day_trade_check.recommendation}")
             
             # FIXED: Handle fractional share restrictions (orders must be < 1.0 shares for fractional)
             orders_executed = 0
@@ -2141,7 +2438,8 @@ class EnhancedFractionalTradingBot:
                     signal_phase='PROFIT_SCALING',
                     signal_strength=opportunity['gain_pct'],
                     account_type=opportunity['account_type'],
-                    order_id=f"SCALING_{orders_executed}_ORDERS"
+                    order_id=f"SCALING_{orders_executed}_ORDERS",
+                    day_trade_check=day_trade_check.recommendation if day_trade_check else 'ALLOWED'
                 )
                 
                 self.database.log_partial_sale(
@@ -2198,14 +2496,18 @@ class EnhancedFractionalTradingBot:
         
         return False
     
-    def run_enhanced_trading_cycle(self) -> Tuple[int, int, int, int]:
-        """FIXED: Enhanced trading cycle with comprehensive exit management"""
+    def run_enhanced_trading_cycle(self) -> Tuple[int, int, int, int, int]:
+        """ENHANCED: Trading cycle with day trade protection"""
         trades_executed = 0
         wyckoff_sells = 0
         profit_scales = 0
         emergency_exits = 0
+        day_trades_blocked = 0
         
         try:
+            # Reset daily counter
+            self.day_trades_blocked_today = 0
+            
             # Step 1: Update configuration with conservative sizing
             config = self.position_manager.update_config(self.main_system.account_manager)
             
@@ -2251,7 +2553,7 @@ class EnhancedFractionalTradingBot:
                                     del current_positions[position_key]
                                 break
             
-            # Step 6: Enhanced profit scaling
+            # Step 6: Enhanced profit scaling with day trade protection
             dynamic_targets = exit_analysis['dynamic_profit_targets']
             
             for symbol, position in current_positions.items():
@@ -2273,13 +2575,14 @@ class EnhancedFractionalTradingBot:
                 self.emergency_mode = True
                 self.logger.warning("🚨 EMERGENCY MODE: Skipping new purchases")
                 
-                # Log enhanced run data
+                # Log enhanced run data with day trade info
                 self.database.log_bot_run(
                     signals_found=0,
                     trades_executed=trades_executed,
                     wyckoff_sells=wyckoff_sells,
                     profit_scales=profit_scales,
                     emergency_exits=emergency_exits,
+                    day_trades_blocked=self.day_trades_blocked_today,
                     errors=0,
                     portfolio_value=sum(acc.net_liquidation for acc in self.main_system.account_manager.get_enabled_accounts()),
                     available_cash=sum(acc.settled_funds for acc in self.main_system.account_manager.get_enabled_accounts()),
@@ -2287,14 +2590,14 @@ class EnhancedFractionalTradingBot:
                     market_condition=portfolio_risk['market_condition'],
                     portfolio_drawdown_pct=portfolio_risk['portfolio_drawdown_pct'],
                     status="EMERGENCY_MODE",
-                    log_details=f"Market: {portfolio_risk['market_condition']}, Drawdown: {portfolio_risk['portfolio_drawdown_pct']:.1%}"
+                    log_details=f"Market: {portfolio_risk['market_condition']}, Drawdown: {portfolio_risk['portfolio_drawdown_pct']:.1%}, DayTrades Blocked: {self.day_trades_blocked_today}"
                 )
                 
-                return trades_executed, wyckoff_sells, profit_scales, emergency_exits
+                return trades_executed, wyckoff_sells, profit_scales, emergency_exits, self.day_trades_blocked_today
             else:
                 self.emergency_mode = False
             
-            # Step 8: Normal buy logic (only if NOT in emergency mode)
+            # Step 8: Normal buy logic (only if NOT in emergency mode) WITH DAY TRADE PROTECTION
             if not self.emergency_mode:
                 self.logger.info("🔍 Scanning for Wyckoff buy signals...")
                 signals = self.wyckoff_strategy.scan_market()
@@ -2309,8 +2612,17 @@ class EnhancedFractionalTradingBot:
                     if buy_signals and len(current_positions) < config['max_positions']:
                         enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
                         
-                        # FIXED: Conservative approach to signal selection
+                        # FIXED: Conservative approach to signal selection WITH DAY TRADE CHECKING
                         for signal in buy_signals[:max(1, config['max_positions'] - len(current_positions))]:
+                            
+                            # STEP 1: Check day trade compliance BEFORE calculating position size
+                            day_trade_check = self._check_day_trade_compliance(signal.symbol, 'BUY')
+                            
+                            if day_trade_check.recommendation == 'BLOCK':
+                                self.logger.warning(f"🚨 BUY SIGNAL BLOCKED BY DAY TRADE RULES: {signal.symbol}")
+                                self.day_trades_blocked_today += 1
+                                continue  # Skip this signal
+                            
                             best_account = max(enabled_accounts, key=lambda x: x.settled_funds)
                             
                             # FIXED: Use the new conservative position sizing
@@ -2329,16 +2641,17 @@ class EnhancedFractionalTradingBot:
                             else:
                                 self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
             
-            return trades_executed, wyckoff_sells, profit_scales, emergency_exits
+            day_trades_blocked = self.day_trades_blocked_today
+            return trades_executed, wyckoff_sells, profit_scales, emergency_exits, day_trades_blocked
             
         except Exception as e:
             self.logger.error(f"❌ Error in enhanced trading cycle: {e}")
-            return trades_executed, wyckoff_sells, profit_scales, emergency_exits
+            return trades_executed, wyckoff_sells, profit_scales, emergency_exits, self.day_trades_blocked_today
     
     def run(self) -> bool:
-        """Main execution with enhanced capabilities"""
+        """Main execution with enhanced day trade protection"""
         try:
-            self.logger.info("🚀 Starting Enhanced Fractional Trading Bot")
+            self.logger.info("🚀 Starting Enhanced Fractional Trading Bot with Day Trade Protection")
             
             if not self.initialize_systems():
                 return False
@@ -2349,10 +2662,10 @@ class EnhancedFractionalTradingBot:
             # Initial reconciliation
             self.run_periodic_reconciliation()
             
-            # Run enhanced trading cycle
-            trades, wyckoff_sells, profit_scales, emergency_exits = self.run_enhanced_trading_cycle()
+            # Run enhanced trading cycle with day trade protection
+            trades, wyckoff_sells, profit_scales, emergency_exits, day_trades_blocked = self.run_enhanced_trading_cycle()
             
-            # Enhanced summary
+            # Enhanced summary with day trade info
             total_actions = trades + wyckoff_sells + profit_scales + emergency_exits
             
             self.logger.info("📊 ENHANCED FRACTIONAL TRADING SESSION SUMMARY")
@@ -2360,10 +2673,11 @@ class EnhancedFractionalTradingBot:
             self.logger.info(f"   Wyckoff Sells: {wyckoff_sells}")
             self.logger.info(f"   Profit Scaling: {profit_scales}")
             self.logger.info(f"   Emergency Exits: {emergency_exits}")
+            self.logger.info(f"   Day Trades Blocked: {day_trades_blocked}")
             self.logger.info(f"   Total Actions: {total_actions}")
             self.logger.info(f"   Emergency Mode: {'YES' if self.emergency_mode else 'NO'}")
             
-            # Enhanced bot run logging
+            # Enhanced bot run logging with day trade tracking
             enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
             self.database.log_bot_run(
                 signals_found=trades,
@@ -2371,20 +2685,24 @@ class EnhancedFractionalTradingBot:
                 wyckoff_sells=wyckoff_sells,
                 profit_scales=profit_scales,
                 emergency_exits=emergency_exits,
+                day_trades_blocked=day_trades_blocked,
                 errors=0,
                 portfolio_value=sum(acc.net_liquidation for acc in enabled_accounts),
                 available_cash=sum(acc.settled_funds for acc in enabled_accounts),
                 emergency_mode=self.emergency_mode,
                 market_condition='UNKNOWN',  # Would get from risk assessment
                 portfolio_drawdown_pct=0.0,  # Would calculate
-                status="COMPLETED_ENHANCED_FIXED",
-                log_details=f"Actions: Buy={trades}, Wyckoff={wyckoff_sells}, Profit={profit_scales}, Emergency={emergency_exits}"
+                status="COMPLETED_ENHANCED_DAY_TRADE_PROTECTION",
+                log_details=f"Actions: Buy={trades}, Wyckoff={wyckoff_sells}, Profit={profit_scales}, Emergency={emergency_exits}, DayTradesBlocked={day_trades_blocked}"
             )
             
             if total_actions > 0:
-                self.logger.info("✅ Enhanced fractional bot completed with actions")
+                self.logger.info("✅ Enhanced fractional bot with day trade protection completed with actions")
             else:
-                self.logger.info("✅ Enhanced fractional bot completed (no actions needed)")
+                self.logger.info("✅ Enhanced fractional bot with day trade protection completed (no actions needed)")
+            
+            if day_trades_blocked > 0:
+                self.logger.warning(f"⚠️ Day trade protection blocked {day_trades_blocked} potential violations")
             
             return True
             
@@ -2484,18 +2802,147 @@ def run_manual_analysis():
             main_system.cleanup()
 
 
+def manual_database_sync_fix():
+    """ADDED: Run this to manually fix any database sync issues"""
+    import sqlite3
+    from pathlib import Path
+    
+    db_path = Path("data/trading_bot.db")
+    bot_id = "enhanced_wyckoff_bot_v2"
+    
+    if not db_path.exists():
+        print("❌ Database not found")
+        return
+    
+    print("🔧 Fixing database synchronization issues...")
+    
+    with sqlite3.connect(db_path) as conn:
+        # Get all positions from main table
+        positions = conn.execute('''
+            SELECT symbol, account_type, total_shares, avg_cost, total_invested,
+                   first_purchase_date, last_purchase_date, entry_phase, entry_strength
+            FROM positions 
+            WHERE bot_id = ? AND total_shares > 0
+        ''', (bot_id,)).fetchall()
+        
+        print(f"📊 Found {len(positions)} positions to sync")
+        
+        for pos in positions:
+            symbol, account_type, shares, avg_cost, invested, first_date, last_date, phase, strength = pos
+            
+            # Calculate enhanced metrics
+            try:
+                first_dt = datetime.strptime(first_date, '%Y-%m-%d')
+                time_held = (datetime.now() - first_dt).days
+            except:
+                time_held = 0
+            
+            # Update or insert into enhanced table
+            conn.execute('''
+                INSERT OR REPLACE INTO positions_enhanced (
+                    symbol, account_type, total_shares, avg_cost, total_invested,
+                    first_purchase_date, last_purchase_date, entry_phase, 
+                    entry_strength, position_size_pct, time_held_days,
+                    volatility_percentile, bot_id, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                symbol, account_type, shares, avg_cost, invested,
+                first_date, last_date, phase or 'UNKNOWN', strength or 0.0,
+                0.1, time_held, 0.5, bot_id, datetime.now().isoformat()
+            ))
+            
+            print(f"✅ Synced: {symbol} ({account_type}) - {shares:.5f} shares")
+    
+    print("✅ Database sync complete!")
+
+
+def show_day_trade_report():
+    """NEW: Show day trading compliance report"""
+    import sqlite3
+    from pathlib import Path
+    
+    db_path = Path("data/trading_bot.db")
+    bot_id = "enhanced_wyckoff_bot_v2"
+    
+    if not db_path.exists():
+        print("❌ Database not found")
+        return
+    
+    print("\n" + "="*80)
+    print("DAY TRADING COMPLIANCE REPORT")
+    print("="*80)
+    
+    with sqlite3.connect(db_path) as conn:
+        # Today's day trade checks
+        today = datetime.now().strftime('%Y-%m-%d')
+        
+        checks = conn.execute('''
+            SELECT symbol, action, db_day_trade, actual_day_trade, 
+                   manual_trades_detected, recommendation, emergency_override, created_at
+            FROM day_trade_checks 
+            WHERE check_date = ? AND bot_id = ?
+            ORDER BY created_at DESC
+        ''', (today, bot_id)).fetchall()
+        
+        if checks:
+            print(f"\n📊 TODAY'S DAY TRADE CHECKS ({len(checks)} total):")
+            blocked_count = 0
+            allowed_count = 0
+            override_count = 0
+            
+            for check in checks:
+                symbol, action, db_dt, actual_dt, manual, recommendation, emergency, timestamp = check
+                
+                status_icon = "🚨" if recommendation == 'BLOCK' else "✅" if recommendation == 'ALLOW' else "⚠️"
+                emergency_text = " [EMERGENCY OVERRIDE]" if emergency else ""
+                
+                print(f"   {status_icon} {symbol} {action}: {recommendation}{emergency_text}")
+                print(f"      DB: {bool(db_dt)}, Actual: {bool(actual_dt)}, Manual: {bool(manual)} - {timestamp}")
+                
+                if recommendation == 'BLOCK':
+                    blocked_count += 1
+                elif recommendation == 'ALLOW':
+                    allowed_count += 1
+                elif emergency:
+                    override_count += 1
+            
+            print(f"\n📈 SUMMARY:")
+            print(f"   ✅ Allowed: {allowed_count}")
+            print(f"   🚨 Blocked: {blocked_count}")
+            print(f"   ⚠️ Emergency Overrides: {override_count}")
+        else:
+            print(f"\n📊 No day trade checks found for today")
+        
+        # Bot run summary with day trade info
+        recent_runs = conn.execute('''
+            SELECT run_date, trades_executed, day_trades_blocked, status
+            FROM bot_runs 
+            WHERE bot_id = ?
+            ORDER BY created_at DESC 
+            LIMIT 10
+        ''', (bot_id,)).fetchall()
+        
+        if recent_runs:
+            print(f"\n📊 RECENT BOT RUNS:")
+            for run in recent_runs:
+                run_date, trades, blocked, status = run
+                print(f"   {run_date}: {trades} trades, {blocked} day trades blocked - {status}")
+    
+    print("\n✅ Day trade report complete!")
+
+
 def main():
     """Main entry point"""
-    print("🚀 Enhanced Fractional Trading Bot Starting - FIXED VERSION...")
+    print("🚀 Enhanced Fractional Trading Bot with Real Account Day Trade Protection Starting...")
     
     bot = EnhancedFractionalTradingBot()
     success = bot.run()
     
     if success:
-        print("✅ Enhanced fractional trading bot completed!")
+        print("✅ Enhanced fractional trading bot with day trade protection completed!")
         sys.exit(0)
     else:
-        print("❌ Enhanced fractional trading bot failed!")
+        print("❌ Enhanced fractional trading bot with day trade protection failed!")
         sys.exit(1)
 
 
@@ -2505,5 +2952,8 @@ if __name__ == "__main__":
     
     # Uncomment to run database sync fix
     # manual_database_sync_fix()
+    
+    # Uncomment to show day trading compliance report
+    # show_day_trade_report()
     
     main()
