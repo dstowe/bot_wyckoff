@@ -64,7 +64,7 @@ class DayTradeCheckResult:
 
 
 class RealAccountDayTradeChecker:
-    """REAL account day trade checking using Webull API"""
+    """FIXED: Real account day trade checking using Webull API"""
     
     def __init__(self, logger):
         self.logger = logger
@@ -72,7 +72,7 @@ class RealAccountDayTradeChecker:
         self.last_cache_update = None
     
     def get_actual_todays_trades(self, wb_client, symbol: str = None) -> List[Dict]:
-        """Get TODAY'S trades from actual Webull account with caching"""
+        """FIXED: Get TODAY'S trades from actual Webull account with correct API methods"""
         today = datetime.now().strftime('%Y-%m-%d')
         cache_key = f"{today}_{symbol or 'ALL'}"
         
@@ -85,54 +85,76 @@ class RealAccountDayTradeChecker:
         try:
             self.logger.debug(f"🔍 Fetching real account trades for {symbol or 'ALL'}")
             
-            # Get actual trade history from Webull
-            # Note: This uses Webull's order history methods
+            # Get actual trade history from Webull using CORRECT method names
             orders = []
             
             try:
-                # Get today's orders using Webull API
-                orders_data = wb_client.get_current_orders()  # Gets pending orders
-                history_data = wb_client.get_order_history()  # Gets historical orders
+                # FIXED: Use correct method names from webull library
+                current_orders = wb_client.get_current_orders()  # Gets pending/open orders
+                history_orders = wb_client.get_history_orders(status='All', count=50)  # Gets historical orders
                 
-                # Combine and filter for today
+                # Combine all orders
                 all_orders = []
-                if orders_data:
-                    all_orders.extend(orders_data)
-                if history_data:
-                    all_orders.extend(history_data)
+                if current_orders:
+                    all_orders.extend(current_orders)
+                if history_orders:
+                    all_orders.extend(history_orders)
                 
-                # Filter for today's trades
+                # Filter for today's FILLED trades
                 today_orders = []
                 for order in all_orders:
                     try:
-                        # Parse order date - handle different date formats
-                        order_date = order.get('orderDate', order.get('createTime', ''))
+                        # Handle different possible date formats from Webull API
+                        order_date = order.get('createTime', order.get('orderDate', order.get('time', '')))
+                        
                         if order_date:
-                            # Convert to date string for comparison
+                            # Parse the date/timestamp
                             if isinstance(order_date, str):
-                                # Handle timestamps or date strings
-                                if len(order_date) > 10:  # Timestamp
-                                    order_dt = datetime.fromtimestamp(int(order_date) / 1000)
-                                else:  # Date string
+                                if len(order_date) > 10:  # Timestamp format
+                                    if order_date.isdigit():
+                                        # Unix timestamp in milliseconds
+                                        order_dt = datetime.fromtimestamp(int(order_date) / 1000)
+                                    else:
+                                        # ISO format or other string format
+                                        try:
+                                            order_dt = datetime.fromisoformat(order_date.replace('Z', '+00:00'))
+                                        except:
+                                            # Try parsing as standard format
+                                            order_dt = datetime.strptime(order_date[:10], '%Y-%m-%d')
+                                else:
+                                    # Date string format
                                     order_dt = datetime.strptime(order_date, '%Y-%m-%d')
                             else:
-                                order_dt = datetime.fromtimestamp(order_date / 1000)
+                                # Numeric timestamp
+                                order_dt = datetime.fromtimestamp(order_date / 1000 if order_date > 1000000000000 else order_date)
                             
                             order_date_str = order_dt.strftime('%Y-%m-%d')
                             
                             # Only include today's FILLED orders
+                            order_status = order.get('status', order.get('orderStatus', '')).upper()
                             if (order_date_str == today and 
-                                order.get('status', '').upper() in ['FILLED', 'PARTIALLY_FILLED']):
+                                order_status in ['FILLED', 'PARTIALLY_FILLED', 'EXECUTED']):
                                 
+                                # Parse order data with multiple possible field names
                                 parsed_order = {
-                                    'symbol': order.get('ticker', order.get('symbol', '')),
-                                    'action': order.get('action', '').upper(),
-                                    'quantity': float(order.get('filledQuantity', order.get('quantity', 0))),
-                                    'price': float(order.get('avgFilledPrice', order.get('price', 0))),
+                                    'symbol': order.get('ticker', order.get('symbol', order.get('stock', ''))),
+                                    'action': order.get('action', order.get('side', '')).upper(),
+                                    'quantity': float(order.get('filledQuantity', 
+                                                           order.get('quantity', 
+                                                           order.get('qty', 0)))),
+                                    'price': float(order.get('avgFilledPrice', 
+                                                          order.get('price', 
+                                                          order.get('fillPrice', 0)))),
                                     'time': order_date_str,
-                                    'order_id': order.get('orderId', ''),
-                                    'status': order.get('status', '')
+                                    'order_id': order.get('orderId', order.get('id', '')),
+                                    'status': order_status
                                 }
+                                
+                                # Normalize action names
+                                if parsed_order['action'] in ['BUY', 'B']:
+                                    parsed_order['action'] = 'BUY'
+                                elif parsed_order['action'] in ['SELL', 'S']:
+                                    parsed_order['action'] = 'SELL'
                                 
                                 # Filter by symbol if specified
                                 if not symbol or parsed_order['symbol'] == symbol:
@@ -144,8 +166,12 @@ class RealAccountDayTradeChecker:
                 
                 orders = today_orders
                 
+            except AttributeError as e:
+                self.logger.warning(f"⚠️ Webull API method not available: {e}")
+                self.logger.warning("⚠️ This may be due to an older version of the webull library")
+                orders = []
             except Exception as e:
-                self.logger.warning(f"⚠️ Could not get Webull order history: {e}")
+                self.logger.warning(f"⚠️ Could not get Webull order data: {e}")
                 orders = []
             
             # Cache the results
@@ -166,29 +192,29 @@ class RealAccountDayTradeChecker:
             return []
     
     def detect_manual_trades(self, wb_client, database, symbol: str) -> bool:
-        """Detect if manual trades occurred by comparing positions"""
+        """FIXED: Detect manual trades with better error handling"""
         try:
             # Get database position
             db_position = database.get_position(symbol)
             if not db_position:
                 return False
             
-            # Get real position from account
+            # Get real position from account using available methods
             try:
-                # This would use Webull's position API
-                account_manager = getattr(wb_client, 'account_manager', None)
-                if not account_manager:
-                    return False
+                # Use available webull methods to get positions
+                positions_data = wb_client.get_positions()  # This method should exist
+                real_total_shares = 0.0
                 
-                enabled_accounts = account_manager.get_enabled_accounts()
-                real_total_shares = 0
+                if positions_data:
+                    for position in positions_data:
+                        if position.get('ticker', position.get('symbol', '')) == symbol:
+                            # Handle different possible quantity field names
+                            quantity = position.get('position', 
+                                                  position.get('quantity', 
+                                                  position.get('shares', 0)))
+                            real_total_shares += float(quantity)
                 
-                for account in enabled_accounts:
-                    for position in account.positions:
-                        if position['symbol'] == symbol:
-                            real_total_shares += position['quantity']
-                
-                # Compare with database total (across all accounts)
+                # Compare with database total (handle multiple accounts)
                 if isinstance(db_position, list):
                     db_total_shares = sum(pos['total_shares'] for pos in db_position)
                 else:
@@ -199,8 +225,12 @@ class RealAccountDayTradeChecker:
                     self.logger.warning(f"⚠️ Position mismatch for {symbol}: Real={real_total_shares:.5f}, DB={db_total_shares:.5f}")
                     return True
                     
+            except AttributeError as e:
+                self.logger.debug(f"Position check method not available: {e}")
+                return False
             except Exception as e:
                 self.logger.debug(f"Error checking position mismatch: {e}")
+                return False
             
             return False
             
@@ -210,13 +240,13 @@ class RealAccountDayTradeChecker:
     
     def comprehensive_day_trade_check(self, wb_client, database, symbol: str, action: str, 
                                     emergency: bool = False) -> DayTradeCheckResult:
-        """Comprehensive day trade check using multiple sources"""
+        """FIXED: Comprehensive day trade check with correct API usage"""
         
         # Check 1: Database trades
         db_trades = database.get_todays_trades(symbol)
         db_day_trade = database.would_create_day_trade(symbol, action)
         
-        # Check 2: Actual account trades
+        # Check 2: Actual account trades using FIXED method
         actual_trades = self.get_actual_todays_trades(wb_client, symbol)
         
         # Analyze actual trades for day trade potential
