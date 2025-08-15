@@ -227,18 +227,33 @@ class LoginManager:
     def check_login_status(self) -> bool:
         """Check if currently logged in and properly initialize account context"""
         try:
-            # Try to make a simple API call to check login status
-            # This also initializes the account context properly
-            account_id = self.wb.get_account_id()
-            if account_id:
-                self.is_logged_in = True
-                self.logger.info(f"Login status verified, account context initialized: {account_id}")
-                return True
-            else:
+            # STORE current account context
+            current_account_id = self.wb._account_id
+            current_zone = self.wb.zone_var
+            
+            # Test with a simple API call that doesn't change account context
+            try:
+                # Use get_quote instead of get_account_id to test login status
+                test_quote = self.wb.get_quote('SPY')
+                if test_quote and 'close' in test_quote:
+                    self.is_logged_in = True
+                    
+                    # RESTORE account context
+                    self.wb._account_id = current_account_id
+                    self.wb.zone_var = current_zone
+                    
+                    self.logger.debug(f"Login status verified, account context preserved: {current_account_id}")
+                    return True
+                else:
+                    self.is_logged_in = False
+                    return False
+            except Exception as e:
+                self.logger.debug(f"Login status check failed: {e}")
                 self.is_logged_in = False
                 return False
+                
         except Exception as e:
-            self.logger.debug(f"Login status check failed: {e}")
+            self.logger.error(f"Error checking login status: {e}")
             self.is_logged_in = False
             return False
     

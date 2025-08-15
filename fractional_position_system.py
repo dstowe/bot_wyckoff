@@ -190,56 +190,44 @@ class RealAccountDayTradeChecker:
         except Exception as e:
             self.logger.error(f"❌ Error getting actual trades: {e}")
             return []
-    
-    def detect_manual_trades(self, wb_client, database, symbol: str) -> bool:
-        """FIXED: Detect manual trades with better error handling"""
+        
+    def detect_manual_trades(self, wb_client, database, symbol: str, account_manager) -> bool:
+        """FIXED: Detect manual trades with proper account handling"""
         try:
-            # Get database position
-            db_position = database.get_position(symbol)
-            if not db_position:
+            # Get database position for this symbol (any account)
+            db_positions = database.get_position(symbol)  # Gets all accounts
+            if not db_positions:
                 return False
             
-            # Get real position from account using available methods
-            try:
-                # Use available webull methods to get positions
-                positions_data = wb_client.get_positions()  # This method should exist
-                real_total_shares = 0.0
-                
-                if positions_data:
-                    for position in positions_data:
-                        if position.get('ticker', position.get('symbol', '')) == symbol:
-                            # Handle different possible quantity field names
-                            quantity = position.get('position', 
-                                                  position.get('quantity', 
-                                                  position.get('shares', 0)))
-                            real_total_shares += float(quantity)
-                
-                # Compare with database total (handle multiple accounts)
-                if isinstance(db_position, list):
-                    db_total_shares = sum(pos['total_shares'] for pos in db_position)
-                else:
-                    db_total_shares = db_position['total_shares']
-                
-                # If there's a significant difference, manual trades likely occurred
-                if abs(real_total_shares - db_total_shares) > 0.001:
-                    self.logger.warning(f"⚠️ Position mismatch for {symbol}: Real={real_total_shares:.5f}, DB={db_total_shares:.5f}")
-                    return True
-                    
-            except AttributeError as e:
-                self.logger.debug(f"Position check method not available: {e}")
-                return False
-            except Exception as e:
-                self.logger.debug(f"Error checking position mismatch: {e}")
-                return False
+            # Handle both single position and list of positions
+            if isinstance(db_positions, list):
+                db_total_shares = sum(pos['total_shares'] for pos in db_positions)
+            else:
+                db_total_shares = db_positions['total_shares']
+            
+            # Get REAL position from ALL accounts
+            real_total_shares = 0.0
+            
+            # Check all enabled accounts for this symbol
+            enabled_accounts = account_manager.get_enabled_accounts()
+            for account in enabled_accounts:
+                for position in account.positions:
+                    if position['symbol'] == symbol:
+                        real_total_shares += position['quantity']
+            
+            # Compare with database total (with proper tolerance)
+            if abs(real_total_shares - db_total_shares) > 0.00001:
+                self.logger.warning(f"Position mismatch for {symbol}: Real={real_total_shares:.5f}, DB={db_total_shares:.5f}")
+                return True
             
             return False
             
         except Exception as e:
-            self.logger.error(f"Error detecting manual trades: {e}")
+            self.logger.error(f"Error detecting manual trades for {symbol}: {e}")
             return False
     
     def comprehensive_day_trade_check(self, wb_client, database, symbol: str, action: str, 
-                                    emergency: bool = False) -> DayTradeCheckResult:
+                                    account_manager, emergency: bool = False) -> DayTradeCheckResult:
         """FIXED: Comprehensive day trade check with correct API usage"""
         
         # Check 1: Database trades
@@ -260,8 +248,8 @@ class RealAccountDayTradeChecker:
             elif action.upper() == 'BUY' and sells_today > 0:
                 actual_day_trade = True
         
-        # Check 3: Manual trades detection
-        manual_trades_detected = self.detect_manual_trades(wb_client, database, symbol)
+        # Check 3: Manual trades detection - NOW WITH account_manager parameter
+        manual_trades_detected = self.detect_manual_trades(wb_client, database, symbol, account_manager)
         
         # Determine final recommendation
         would_be_day_trade = db_day_trade or actual_day_trade
@@ -1526,7 +1514,7 @@ class ComprehensiveExitManager:
         self.last_reconciliation = None
     
     def reconcile_positions(self, wb_client, account_manager) -> Dict:
-        """Compare database positions with actual Webull holdings BY ACCOUNT"""
+        """FIXED: Compare database positions with actual Webull holdings BY ACCOUNT"""
         reconciliation_report = {
             'discrepancies_found': [],
             'positions_synced': 0,
@@ -1535,20 +1523,32 @@ class ComprehensiveExitManager:
         }
         
         try:
-            # Get real positions from each account
+            self.logger.info("🔍 Starting position reconciliation...")
+            
+            # Get real positions from each account - FIXED METHOD
             enabled_accounts = account_manager.get_enabled_accounts()
             real_positions = {}
             
             for account in enabled_accounts:
-                for position in account.positions:
-                    # Create account-specific key
-                    position_key = f"{position['symbol']}_{account.account_type}"
-                    real_positions[position_key] = {
-                        'symbol': position['symbol'],
-                        'account_type': account.account_type,
-                        'total_shares': position['quantity'],
-                        'avg_cost': position['cost_price']
-                    }
+                self.logger.debug(f"Checking {account.account_type} for positions...")
+                
+                # CRITICAL FIX: Use the account.positions that were already parsed correctly
+                # Instead of trying to re-query them (which was failing)
+                if account.positions:
+                    for position in account.positions:
+                        # Create account-specific key
+                        position_key = f"{position['symbol']}_{account.account_type}"
+                        real_positions[position_key] = {
+                            'symbol': position['symbol'],
+                            'account_type': account.account_type,
+                            'total_shares': position['quantity'],
+                            'avg_cost': position['cost_price']
+                        }
+                        self.logger.debug(f"   Found: {position['symbol']} = {position['quantity']:.5f} shares")
+                else:
+                    self.logger.debug(f"   No positions in {account.account_type}")
+            
+            self.logger.info(f"Real positions found: {len(real_positions)}")
             
             # Get bot positions from database (by account)
             bot_positions = {}
@@ -1556,7 +1556,7 @@ class ComprehensiveExitManager:
                 results = conn.execute('''
                     SELECT symbol, account_type, total_shares, avg_cost 
                     FROM positions 
-                    WHERE bot_id = ?
+                    WHERE bot_id = ? AND total_shares > 0
                 ''', (self.database.bot_id,)).fetchall()
                 
                 for symbol, account_type, shares, avg_cost in results:
@@ -1568,7 +1568,9 @@ class ComprehensiveExitManager:
                         'avg_cost': avg_cost
                     }
             
-            # Compare and correct discrepancies
+            self.logger.info(f"Database positions found: {len(bot_positions)}")
+            
+            # Compare and correct discrepancies - IMPROVED LOGIC
             all_position_keys = set(real_positions.keys()) | set(bot_positions.keys())
             
             for position_key in all_position_keys:
@@ -1578,7 +1580,8 @@ class ComprehensiveExitManager:
                 real_shares = real_pos['total_shares']
                 bot_shares = bot_pos['total_shares']
                 
-                if abs(real_shares - bot_shares) > 0.001:
+                # FIXED: Use more reasonable tolerance for fractional shares
+                if abs(real_shares - bot_shares) > 0.00001:  # Changed from 0.001 to 0.00001
                     symbol = position_key.split('_')[0]
                     account_type = '_'.join(position_key.split('_')[1:])
                     
@@ -1592,71 +1595,27 @@ class ComprehensiveExitManager:
                     }
                     reconciliation_report['discrepancies_found'].append(discrepancy)
                     
+                    self.logger.info(f"Discrepancy: {symbol} Real={real_shares:.5f}, DB={bot_shares:.5f}")
+                    
                     # Auto-correct the position
                     if self._auto_correct_position_by_account(symbol, account_type, real_shares, real_pos['avg_cost']):
                         reconciliation_report['positions_corrected'] += 1
-                
+                else:
+                    self.logger.debug(f"Position matches: {position_key}")
+                    
                 reconciliation_report['positions_synced'] += 1
-                
+            
+            if reconciliation_report['discrepancies_found']:
+                self.logger.warning(f"Found {len(reconciliation_report['discrepancies_found'])} discrepancies")
+            else:
+                self.logger.info("✅ All positions match - no reconciliation needed")
+                    
         except Exception as e:
             self.logger.error(f"Error during position reconciliation: {e}")
+            import traceback
+            traceback.print_exc()
         
         return reconciliation_report
-    
-    def _auto_correct_position_by_account(self, symbol: str, account_type: str, real_shares: float, real_avg_cost: float) -> bool:
-        """Auto-correct position discrepancies for a specific account."""
-        try:
-            with sqlite3.connect(self.database.db_path) as conn:
-                if real_shares == 0:
-                    # Remove ghost position from the specific account
-                    conn.execute('''
-                        DELETE FROM positions 
-                        WHERE symbol = ? AND account_type = ? AND bot_id = ?
-                    ''', (symbol, account_type, self.database.bot_id))
-                    conn.execute('''
-                        DELETE FROM positions_enhanced 
-                        WHERE symbol = ? AND account_type = ? AND bot_id = ?
-                    ''', (symbol, account_type, self.database.bot_id))
-                    self.logger.info(f"Removed ghost position: {symbol} from {account_type}")
-                else:
-                    # Update/insert correct position in both tables
-                    for table in ['positions', 'positions_enhanced']:
-                        if table == 'positions_enhanced':
-                            conn.execute('''
-                                INSERT OR REPLACE INTO positions_enhanced 
-                                (symbol, account_type, total_shares, avg_cost, total_invested,
-                                 first_purchase_date, last_purchase_date, entry_phase, 
-                                 entry_strength, position_size_pct, time_held_days,
-                                 volatility_percentile, bot_id, updated_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ''', (
-                                symbol, account_type, real_shares, real_avg_cost, 
-                                real_shares * real_avg_cost,
-                                datetime.now().strftime('%Y-%m-%d'),
-                                datetime.now().strftime('%Y-%m-%d'),
-                                'RECONCILED', 0.0, 0.1, 0, 0.5, self.database.bot_id,
-                                datetime.now().isoformat()
-                            ))
-                        else:
-                            conn.execute('''
-                                INSERT OR REPLACE INTO positions 
-                                (symbol, account_type, total_shares, avg_cost, total_invested,
-                                 first_purchase_date, last_purchase_date, entry_phase, 
-                                 entry_strength, bot_id, updated_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ''', (
-                                symbol, account_type, real_shares, real_avg_cost, 
-                                real_shares * real_avg_cost,
-                                datetime.now().strftime('%Y-%m-%d'),
-                                datetime.now().strftime('%Y-%m-%d'),
-                                'RECONCILED', 0.0, self.database.bot_id,
-                                datetime.now().isoformat()
-                            ))
-                    self.logger.info(f"Corrected position: {symbol} in {account_type} to {real_shares} shares @ ${real_avg_cost:.2f}")
-            return True
-        except Exception as e:
-            self.logger.error(f"Error auto-correcting position {symbol} in {account_type}: {e}")
-            return False
     
     def run_comprehensive_analysis(self, wb_client, account_manager, current_positions: Dict) -> Dict:
         """Run complete exit analysis"""
@@ -1826,7 +1785,8 @@ class EnhancedFractionalTradingBot:
     def _check_day_trade_compliance(self, symbol: str, action: str, emergency: bool = False) -> DayTradeCheckResult:
         """NEW: Check comprehensive day trading compliance"""
         return self.day_trade_checker.comprehensive_day_trade_check(
-            self.main_system.wb, self.database, symbol, action, emergency
+            self.main_system.wb, self.database, symbol, action, 
+            self.main_system.account_manager, emergency  # ADD account_manager parameter
         )
     
     def get_current_positions(self) -> Dict[str, Dict]:
@@ -1834,29 +1794,57 @@ class EnhancedFractionalTradingBot:
         return self.database.get_all_positions()
     
     def _ensure_valid_session(self) -> bool:
-        """Ensure we have a valid session, refresh if needed"""
+        """FIXED: Ensure we have a valid session WITHOUT resetting account context"""
         try:
-            # Test session with a simple API call
-            if self.main_system.login_manager.check_login_status():
-                return True
+            # STORE current account context before validation
+            current_account_id = self.main_system.wb._account_id
+            current_zone = self.main_system.wb.zone_var
             
-            self.logger.warning("⚠️ Session appears invalid, attempting refresh...")
+            self.logger.debug(f"🔍 Validating session (preserving account context: {current_account_id})")
             
-            # Clear old session and force fresh login
-            self.main_system.session_manager.clear_session()
-            
-            # Attempt fresh login
-            if self.main_system.login_manager.login_automatically():
-                self.logger.info("✅ Session refreshed successfully")
-                self.main_system.session_manager.save_session(self.main_system.wb)
-                return True
-            else:
-                self.logger.error("❌ Failed to refresh session")
-                return False
+            # Test session with a simple API call that doesn't change account context
+            try:
+                # Use get_quote instead of account-specific calls to test session
+                test_quote = self.main_system.wb.get_quote('SPY')
+                if test_quote and 'close' in test_quote:
+                    self.logger.debug(f"✅ Session validation passed (quote successful)")
+                    
+                    # RESTORE account context (in case it got changed)
+                    self.main_system.wb._account_id = current_account_id
+                    self.main_system.wb.zone_var = current_zone
+                    
+                    return True
+                else:
+                    self.logger.warning("⚠️ Session validation failed (quote failed)")
+                    return False
+                    
+            except Exception as test_error:
+                self.logger.warning(f"⚠️ Session test failed: {test_error}")
                 
+                # Try to refresh session if the test failed
+                self.logger.info("🔄 Attempting session refresh...")
+                
+                # Clear old session and force fresh login (but preserve account context)
+                self.main_system.session_manager.clear_session()
+                
+                if self.main_system.login_manager.login_automatically():
+                    self.logger.info("✅ Session refreshed successfully")
+                    
+                    # CRITICAL: Restore the account context after refresh
+                    self.main_system.wb._account_id = current_account_id
+                    self.main_system.wb.zone_var = current_zone
+                    
+                    # Save the refreshed session
+                    self.main_system.session_manager.save_session(self.main_system.wb)
+                    return True
+                else:
+                    self.logger.error("❌ Failed to refresh session")
+                    return False
+                    
         except Exception as e:
-            self.logger.error(f"❌ Error checking/refreshing session: {e}")
-            return False    
+            self.logger.error(f"❌ Error in session validation: {e}")
+            return False
+  
         
     def execute_buy_order(self, signal: WyckoffSignal, account, position_size: float) -> bool:
         """ENHANCED: Execute buy order with DAY TRADE PROTECTION and strict cash validation"""
