@@ -1210,7 +1210,131 @@ class DynamicAccountManager:
             'min_cash_buffer_per_account': 15.0
         }
 
+    def _calculate_regime_aware_parameters(self, total_value: float, total_cash: float, 
+                                        accounts: List, regime_multiplier: float, 
+                                        regime_data: Optional[MarketRegimeData]) -> Dict:
+        """OPTIMIZATION 2: Calculate regime-aware parameters"""
+        
+        # Find the account with the most cash for primary trading
+        max_cash_available = max(acc.settled_funds for acc in accounts) if accounts else total_cash
+        
+        # Base conservative position sizing
+        if total_cash < 100:
+            base_position_pct = 0.08
+            max_positions = 2
+            min_balance_pct = 0.40
+        elif total_cash < 300:
+            base_position_pct = 0.10
+            max_positions = 3
+            min_balance_pct = 0.30
+        elif total_cash < 500:
+            base_position_pct = 0.12
+            max_positions = 4
+            min_balance_pct = 0.25
+        else:
+            base_position_pct = 0.15
+            max_positions = 5
+            min_balance_pct = 0.20
+        
+        # Apply regime adjustments
+        regime_adjusted_position_pct = base_position_pct * regime_multiplier
+        
+        # Adjust max positions based on regime
+        if regime_data:
+            if regime_data.trend_regime == 'BEAR':
+                max_positions = max(1, max_positions - 1)
+            elif regime_data.volatility_regime in ['HIGH', 'CRISIS']:
+                max_positions = max(1, max_positions - 1)
+            
+            if regime_data.regime_confidence < 0.5:
+                min_balance_pct += 0.10
+        
+        # Calculate position size with regime adjustment
+        base_position_size = min(
+            total_cash * regime_adjusted_position_pct,
+            max_cash_available * 0.4,
+            15.0
+        )
+        
+        min_balance_preserve = total_cash * min_balance_pct
+        
+        if base_position_size < 5.0:
+            base_position_size = min(5.0, total_cash * 0.3)
+        
+        wyckoff_phases = self._get_regime_aware_wyckoff_phases(regime_data)
+        profit_targets = self._get_regime_aware_profit_targets(regime_data)
+        
+        return {
+            'total_value': total_value,
+            'total_cash': total_cash,
+            'max_cash_per_account': max_cash_available,
+            'base_position_size': base_position_size,
+            'base_position_pct': regime_adjusted_position_pct,
+            'min_balance_preserve': min_balance_preserve,
+            'max_positions': max_positions,
+            'num_accounts': len(accounts),
+            'wyckoff_phases': wyckoff_phases,
+            'profit_targets': profit_targets,
+            'calculated_at': datetime.now().isoformat(),
+            'regime_data': regime_data,
+            'regime_multiplier': regime_multiplier,
+            'max_position_per_account': max_cash_available * 0.4,
+            'min_cash_buffer_per_account': 15.0
+        }
 
+    def _get_regime_aware_wyckoff_phases(self, regime_data: Optional[MarketRegimeData]) -> Dict:
+        """OPTIMIZATION 2: Adjust Wyckoff phase allocations based on regime"""
+        
+        base_phases = {
+            'ST': {'initial_allocation': 0.40, 'allow_additions': False, 'max_total_allocation': 0.40},
+            'SOS': {'initial_allocation': 0.50, 'allow_additions': True, 'max_total_allocation': 0.80},
+            'LPS': {'initial_allocation': 0.35, 'allow_additions': True, 'max_total_allocation': 0.70},
+            'BU': {'initial_allocation': 0.30, 'allow_additions': True, 'max_total_allocation': 0.60},
+            'Creek': {'initial_allocation': 0.0, 'allow_additions': False, 'max_total_allocation': 0.0}
+        }
+        
+        if not regime_data:
+            return base_phases
+        
+        if regime_data.trend_regime == 'BULL':
+            base_phases['SOS']['initial_allocation'] = 0.60
+            base_phases['SOS']['max_total_allocation'] = 0.90
+            base_phases['LPS']['initial_allocation'] = 0.45
+        elif regime_data.trend_regime == 'BEAR':
+            base_phases['ST']['initial_allocation'] = 0.30
+            base_phases['SOS']['initial_allocation'] = 0.35
+            base_phases['SOS']['max_total_allocation'] = 0.60
+            base_phases['LPS']['max_total_allocation'] = 0.50
+        
+        if regime_data.volatility_regime in ['HIGH', 'CRISIS']:
+            for phase in base_phases.values():
+                phase['initial_allocation'] *= 0.8
+                phase['max_total_allocation'] *= 0.8
+        
+        return base_phases
+
+    def _get_regime_aware_profit_targets(self, regime_data: Optional[MarketRegimeData]) -> List[Dict]:
+        """OPTIMIZATION 2: Adjust profit targets based on regime"""
+        
+        base_targets = [
+            {'gain_pct': 0.06, 'sell_pct': 0.15, 'description': '6% gain: Take 15% profit'},
+            {'gain_pct': 0.12, 'sell_pct': 0.20, 'description': '12% gain: Take 20% more'},
+            {'gain_pct': 0.20, 'sell_pct': 0.25, 'description': '20% gain: Take 25% more'},
+            {'gain_pct': 0.30, 'sell_pct': 0.40, 'description': '30% gain: Take final 40%'}
+        ]
+        
+        if not regime_data:
+            return base_targets
+        
+        if regime_data.volatility_regime in ['HIGH', 'CRISIS']:
+            for target in base_targets:
+                target['gain_pct'] *= 0.75
+                target['sell_pct'] *= 1.1
+        elif regime_data.volatility_regime == 'LOW':
+            for target in base_targets:
+                target['gain_pct'] *= 1.25
+        
+        return base_targets
 class DynamicProfitTargetCalculator:
     """Calculate dynamic profit targets based on multiple factors"""
     
