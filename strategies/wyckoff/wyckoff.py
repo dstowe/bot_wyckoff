@@ -11,6 +11,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import sqlite3
 import traceback
+# ENHANCEMENT: Multi-timeframe analysis import - Strategic Improvement 5 📈
+try:
+    from .multi_timeframe_analyzer import (
+        EnhancedMultiTimeframeWyckoffAnalyzer,
+        MultiTimeframeSignal,
+        filter_signals_by_quality
+    )
+    MULTI_TIMEFRAME_AVAILABLE = True
+    print("✅ Multi-timeframe signal quality enhancement available")
+except ImportError as e:
+    MULTI_TIMEFRAME_AVAILABLE = False
+    print(f"⚠️ Multi-timeframe enhancement not available: {e}")
+
 
 
 warnings.filterwarnings('ignore')
@@ -274,160 +287,22 @@ class PointFigureChart:
 class WyckoffAnalyzer:
     """Wyckoff Method analysis for identifying accumulation/distribution phases"""
     def __init__(self):
-        self.phases = ['PS', 'SC', 'AR', 'ST', 'Creek', 'SOS', 'LPS', 'BU']
-
-    def analyze_wyckoff_phase(self, symbol: str, data: pd.DataFrame, pf_chart: PointFigureChart) -> Dict:
-        if len(data) < 50: return {'phase': 'Insufficient_Data', 'strength': 0}
-
-        volume_ma = data['volume'].rolling(20).mean()
-        recent_data = data.tail(20)
-        phase_scores = {
-            'PS': self._calculate_ps_score(symbol, recent_data, volume_ma.tail(20)),
-            'SC': self._calculate_sc_score(symbol, recent_data, volume_ma.tail(20)),
-            'AR': self._calculate_ar_score(symbol, recent_data),
-            'ST': self._calculate_st_score(symbol, recent_data, volume_ma.tail(20)),
-            'Creek': self._calculate_creek_score(symbol, recent_data),
-            'SOS': self._calculate_sos_score(symbol, recent_data, volume_ma.tail(20), pf_chart),
-            'LPS': self._calculate_lps_score(symbol, recent_data, volume_ma.tail(20)),
-            'BU': self._calculate_bu_score(symbol, recent_data)
-        }
-        best_phase = max(phase_scores, key=phase_scores.get)
-        return {'phase': best_phase, 'strength': phase_scores[best_phase], 'all_scores': phase_scores}
-
-    def _log_error(self, func_name, symbol, e):
-        print(f"\n--- ERROR in {func_name} for {symbol} ---\nError: {e}")
-        traceback.print_exc()
-        print("--- END ERROR ---")
-
-    def _calculate_ps_score(self, symbol: str, data: pd.DataFrame, volume_ma: pd.Series) -> float:
-        if len(data) < 5: return 0.0
-        try:
-            aligned_volume_ma = volume_ma.reindex(data.index, method='ffill')
-            high_vol = data['volume'] > aligned_volume_ma * 1.3
-            price_dec = data['close'] < data['close'].shift(1)
-            return float((high_vol & price_dec).sum()) / 5.0
-        except Exception as e:
-            self._log_error('_calculate_ps_score', symbol, e); return 0.0
-
-    def _calculate_sc_score(self, symbol: str, data: pd.DataFrame, volume_ma: pd.Series) -> float:
-        if len(data) < 3: return 0.0
-        try:
-            aligned_volume_ma = volume_ma.reindex(data.index, method='ffill')
-            vol_spike = float(data['volume'].max()) > float(aligned_volume_ma.max()) * 2
-            price_drop = (float(data['close'].min()) / float(data['close'].max()) - 1) < -0.05
-            return 0.8 if (vol_spike and price_drop) else 0.2
-        except Exception as e:
-            self._log_error('_calculate_sc_score', symbol, e); return 0.0
-
-    def _calculate_ar_score(self, symbol: str, data: pd.DataFrame) -> float:
-        if len(data) < 5: return 0.0
-        try:
-            recovery = (float(data['close'].iloc[-1]) / float(data['low'].min())) - 1
-            return min(recovery * 5, 1.0)
-        except Exception as e:
-            self._log_error('_calculate_ar_score', symbol, e); return 0.0
-
-    def _calculate_st_score(self, symbol: str, data: pd.DataFrame, volume_ma: pd.Series) -> float:
-        if len(data) < 10: return 0.0
-        try:
-            recent_low = float(data['low'].tail(5).min())
-            prev_low = float(data['low'].head(10).min())
-            aligned_vol_ma = volume_ma.reindex(data.index, method='ffill')
-            low_vol_test = float(data['volume'].tail(5).mean()) < float(aligned_vol_ma.mean())
-            price_test = abs(recent_low - prev_low) / prev_low < 0.02
-            return 0.7 if (price_test and low_vol_test) else 0.1
-        except Exception as e:
-            self._log_error('_calculate_st_score', symbol, e); return 0.0
-
-    def _calculate_creek_score(self, symbol: str, data: pd.DataFrame) -> float:
-        if len(data) < 10: return 0.0
-        try:
-            price_range = (float(data['high'].max()) - float(data['low'].min())) / float(data['close'].mean())
-            vol_decline = float(data['volume'].tail(5).mean()) < float(data['volume'].head(10).mean())
-            return 0.6 if (price_range < 0.05 and vol_decline) else 0.1
-        except Exception as e:
-            self._log_error('_calculate_creek_score', symbol, e); return 0.0
-
-    def _calculate_sos_score(self, symbol: str, data: pd.DataFrame, volume_ma: pd.Series, pf_chart: PointFigureChart) -> float:
-        if len(data) < 5: return 0.0
-        try:
-            price_breakout = float(data['close'].iloc[-1]) > float(data['high'].head(15).max())
-            aligned_vol_ma = volume_ma.reindex(data.index, method='ffill')
-            vol_confirm = float(data['volume'].tail(3).mean()) > float(aligned_vol_ma.mean()) * 1.2
-            pf_breakout = len(pf_chart.identify_patterns()['double_top_breakout']) > 0
-            score = sum([s for c, s in zip([price_breakout, vol_confirm, pf_breakout], [0.4, 0.3, 0.3]) if c])
-            return score
-        except Exception as e:
-            self._log_error('_calculate_sos_score', symbol, e); return 0.0
-
-    def _calculate_lps_score(self, symbol: str, data: pd.DataFrame, volume_ma: pd.Series) -> float:
-        if len(data) < 10: return 0.0
-        try:
-            support_test = float(data['low'].tail(5).min()) > float(data['low'].head(10).min()) * 0.98
-            aligned_vol_ma = volume_ma.reindex(data.index, method='ffill')
-            low_vol = float(data['volume'].tail(5).mean()) < float(aligned_vol_ma.mean())
-            return 0.6 if (support_test and low_vol) else 0.1
-        except Exception as e:
-            self._log_error('_calculate_lps_score', symbol, e); return 0.0
-
-    def _calculate_bu_score(self, symbol: str, data: pd.DataFrame) -> float:
-        if len(data) < 10: return 0.0
-        try:
-            pullback = 1 - (float(data['close'].iloc[-1]) / float(data['high'].head(10).max()))
-            return min(pullback * 3, 1.0) if pullback > 0.02 else 0.1
-        except Exception as e:
-            self._log_error('_calculate_bu_score', symbol, e); return 0.0
-
-
-class SectorRotationAnalyzer:
-    """Analyze sector rotation patterns"""
-    def __init__(self):
-        self.sector_etfs = {'Technology': 'XLK', 'Healthcare': 'XLV', 'Financials': 'XLF',
-                            'Consumer_Discretionary': 'XLY', 'Consumer_Staples': 'XLP',
-                            'Energy': 'XLE', 'Utilities': 'XLU', 'Real_Estate': 'XLRE',
-                            'Materials': 'XLB', 'Industrials': 'XLI', 'Communication': 'XLC'}
-
-    def get_sector_ranking(self, period: str = '6mo') -> List[Tuple[str, float]]:
-        """Get sectors ranked by relative strength"""
-        try:
-            # Download SPY first using Ticker object
-            spy_ticker = yf.Ticker('SPY')
-            spy = spy_ticker.history(period=period)
-            if spy.empty:
-                print("Could not download SPY data")
-                return []
-            spy_return = (spy['Close'].iloc[-1] / spy['Close'].iloc[0] - 1)
-            
-            # Download ETFs individually using Ticker objects
-            perf = {}
-            for sector, etf in self.sector_etfs.items():
-                try:
-                    etf_ticker = yf.Ticker(etf)
-                    etf_data = etf_ticker.history(period=period)
-                    if not etf_data.empty and 'Close' in etf_data.columns:
-                        etf_close = etf_data['Close'].dropna()
-                        if len(etf_close) > 1:
-                            etf_return = (etf_close.iloc[-1] / etf_close.iloc[0] - 1)
-                            perf[sector] = (etf_return - spy_return) * 100
-                except Exception as e:
-                    print(f"Error downloading {etf}: {e}")
-                    continue
-            
-            return sorted(perf.items(), key=lambda x: x[1], reverse=True)
-        except Exception as e:
-            print(f"Could not download sector data: {e}")
-            return []
-
-
-class WyckoffPnFStrategy:
-    """Main trading strategy combining Wyckoff, Point and Figure, and Sector Rotation"""
-    def __init__(self):
         self.wyckoff_analyzer = WyckoffAnalyzer()
         self.sector_analyzer = SectorRotationAnalyzer()
         self.db_manager = DatabaseManager()
         self.symbols = self.get_sp500_symbols()
+        
+        # ENHANCEMENT: Initialize multi-timeframe analyzer - Strategic Improvement 5 📈
+        if MULTI_TIMEFRAME_AVAILABLE:
+            self.enhanced_analyzer = EnhancedMultiTimeframeWyckoffAnalyzer()
+            self.use_enhanced_analysis = True
+            print("🎯 Enhanced multi-timeframe Wyckoff analysis enabled")
+        else:
+            self.enhanced_analyzer = None
+            self.use_enhanced_analysis = False
+            print("📊 Using standard single-timeframe analysis")
 
-    def get_sp500_symbols(self) -> List[str]:
+    \3(self) -> List[str]:
         # A sample of major stocks across different sectors
         return ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META', 'NFLX', 'CRM', 'ADBE',
                 'JNJ', 'PFE', 'UNH', 'ABBV', 'TMO', 'DHR', 'ABT', 'LLY', 'BMY', 'MRK',
@@ -554,10 +429,45 @@ Signals Found: {len(signals)}
         print("\nAnalyzing sector rotation...")
         sector_ranking = self.sector_analyzer.get_sector_ranking()
         
-        signals = self.scan_market()
+        signals = self.scan_market_enhanced()
         report = self.generate_report(signals, sector_ranking)
         return report
 
+
+
+    def scan_market_enhanced(self, max_workers: int = 10) -> List[WyckoffSignal]:
+        """Enhanced market scanning with multi-timeframe analysis"""
+        try:
+            if self.use_enhanced_analysis and self.enhanced_analyzer:
+                print("🔍 Using enhanced multi-timeframe scanning")
+                
+                enhanced_signals = self.enhanced_analyzer.scan_market_enhanced(
+                    self.symbols, max_workers=max_workers
+                )
+                
+                # Convert to legacy format
+                legacy_signals = []
+                for enhanced_signal in enhanced_signals:
+                    if enhanced_signal.signal_quality in ['GOOD', 'EXCELLENT']:
+                        legacy_signal = WyckoffSignal(
+                            symbol=enhanced_signal.symbol,
+                            phase=enhanced_signal.primary_phase,
+                            strength=enhanced_signal.enhanced_strength,
+                            price=enhanced_signal.price,
+                            volume_confirmation=enhanced_signal.volume_confirmation,
+                            sector=enhanced_signal.sector,
+                            combined_score=enhanced_signal.confirmation_score
+                        )
+                        legacy_signals.append(legacy_signal)
+                
+                print(f"🎯 Enhanced analysis found {len(legacy_signals)} high-quality signals")
+                return legacy_signals
+            else:
+                return self.scan_market(max_workers)
+                
+        except Exception as e:
+            print(f"❌ Enhanced scanning failed, using fallback: {e}")
+            return self.scan_market(max_workers)
 
 def main():
     """Main execution function"""

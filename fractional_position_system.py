@@ -35,6 +35,17 @@ except ImportError:
     print("⚠️ Enhanced Exit Strategy not available - using base system")
 
 from strategies.wyckoff.wyckoff import WyckoffPnFStrategy, WyckoffSignal
+# ENHANCEMENT: Multi-timeframe signal quality import - Strategic Improvement 5 📈
+try:
+    from strategies.wyckoff.multi_timeframe_analyzer import (
+        EnhancedMultiTimeframeWyckoffAnalyzer,
+        filter_signals_by_quality,
+        MultiTimeframeSignal
+    )
+    SIGNAL_QUALITY_ENHANCEMENT = True
+except ImportError:
+    SIGNAL_QUALITY_ENHANCEMENT = False
+
 from config.config import PersonalTradingConfig
 
 
@@ -2109,7 +2120,15 @@ class EnhancedFractionalTradingBot:
         self.day_trade_checker = None  # NEW: Real account day trade checker
         self.setup_logging()
         # Enhanced features
-        self.emergency_mode = False
+        self.emergency_mode = False        
+        # ENHANCEMENT: Signal Quality Enhancement - Strategic Improvement 5 📈
+        if SIGNAL_QUALITY_ENHANCEMENT:
+            self.signal_quality_analyzer = EnhancedMultiTimeframeWyckoffAnalyzer(self.logger)
+            self.logger.info("🎯 Signal Quality Enhancement (Multi-timeframe) enabled")
+        else:
+            self.signal_quality_analyzer = None
+            self.logger.info("📊 Using standard signal analysis")
+
         self.last_reconciliation = None
         self.day_trades_blocked_today = 0
         # OPTIMIZATION 4: Enhanced Exit Strategy Manager
@@ -2465,7 +2484,35 @@ class EnhancedFractionalTradingBot:
                         if buy_signals and len(current_positions) < config['max_positions']:
                             enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
                             
-                            # FIXED: Conservative approach to signal selection WITH DAY TRADE CHECKING
+                            
+                        # ENHANCEMENT: Apply signal quality filtering - Strategic Improvement 5 📈
+                        if SIGNAL_QUALITY_ENHANCEMENT and self.signal_quality_analyzer:
+                            try:
+                                enhanced_signals = []
+                                for signal in buy_signals:
+                                    enhanced_result = self.signal_quality_analyzer.analyze_symbol_multi_timeframe(signal.symbol)
+                                    
+                                    if enhanced_result and enhanced_result.signal_quality in ['GOOD', 'EXCELLENT']:
+                                        signal.strength = enhanced_result.enhanced_strength
+                                        signal.combined_score = enhanced_result.confirmation_score
+                                        enhanced_signals.append(signal)
+                                        
+                                        self.logger.info(f"🎯 {signal.symbol}: {enhanced_result.signal_quality} quality "
+                                                       f"(Phases: {enhanced_result.primary_phase}/"
+                                                       f"{enhanced_result.entry_timing_phase}/"
+                                                       f"{enhanced_result.precision_phase})")
+                                
+                                if enhanced_signals:
+                                    self.logger.info(f"📈 Quality Enhancement: {len(enhanced_signals)}/{len(buy_signals)} signals passed")
+                                    buy_signals = enhanced_signals
+                                else:
+                                    self.logger.info(f"⚠️ Quality Enhancement: No signals met criteria")
+                                    buy_signals = []
+                                    
+                            except Exception as e:
+                                self.logger.warning(f"⚠️ Signal quality enhancement failed: {e}")
+
+                        # FIXED: Conservative approach to signal selection WITH DAY TRADE CHECKING
                             for signal in buy_signals[:max(1, config['max_positions'] - len(current_positions))]:
                                 
                                 # STEP 1: Check day trade compliance BEFORE calculating position size
