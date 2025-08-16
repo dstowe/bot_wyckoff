@@ -2107,7 +2107,7 @@ class EnhancedFractionalTradingBot:
         self.position_manager = None
         self.comprehensive_exit_manager = None
         self.day_trade_checker = None  # NEW: Real account day trade checker
-        
+        self.setup_logging()
         # Enhanced features
         self.emergency_mode = False
         self.last_reconciliation = None
@@ -2135,7 +2135,7 @@ class EnhancedFractionalTradingBot:
         self.buy_phases = ['ST', 'SOS', 'LPS', 'BU']
         self.sell_phases = ['PS', 'SC']
         
-        self.setup_logging()
+        
     
     def setup_logging(self):
         """Setup enhanced logging"""
