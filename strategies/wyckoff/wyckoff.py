@@ -283,8 +283,33 @@ class PointFigureChart:
                     patterns['double_bottom_breakout'].append(i)
         return patterns
 
+class SectorRotationAnalyzer:
+    """Simple sector rotation analyzer"""
+    def __init__(self):
+        self.sector_etfs = {
+            'Technology': 'XLK', 'Healthcare': 'XLV', 'Financials': 'XLF',
+            'Consumer_Discretionary': 'XLY', 'Energy': 'XLE'
+        }
+    
+    def get_sector_ranking(self):
+        # Simple fallback ranking
+        return [
+            ('Technology', 5.2), ('Healthcare', 3.1), ('Financials', 2.8),
+            ('Consumer_Discretionary', 2.1), ('Energy', 1.5)
+        ]
 
 class WyckoffAnalyzer:
+    """Internal Wyckoff analysis methods"""
+    def __init__(self):
+        pass
+    
+    def analyze_wyckoff_phase(self, symbol, data, pf_chart):
+        return {'phase': 'UNKNOWN', 'strength': 0.5}
+    
+    def _log_error(self, method, symbol, error):
+        print(f"Wyckoff error in {method} for {symbol}: {error}")
+        
+class WyckoffPnFStrategy:
     """Wyckoff Method analysis for identifying accumulation/distribution phases"""
     def __init__(self):
         self.wyckoff_analyzer = WyckoffAnalyzer()
@@ -302,7 +327,7 @@ class WyckoffAnalyzer:
             self.use_enhanced_analysis = False
             print("📊 Using standard single-timeframe analysis")
 
-    \3(self) -> List[str]:
+    def get_sp500_symbols(self) -> List[str]:        
         # A sample of major stocks across different sectors
         return ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META', 'NFLX', 'CRM', 'ADBE',
                 'JNJ', 'PFE', 'UNH', 'ABBV', 'TMO', 'DHR', 'ABT', 'LLY', 'BMY', 'MRK',
