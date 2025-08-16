@@ -24,7 +24,7 @@ from main import MainSystem
 
 # Import market regime analyzer - OPTIMIZATION 2
 from market_regime_analyzer import EnhancedMarketRegimeAnalyzer, RegimeAwarePositionSizer, MarketRegimeData
-
+from position_sizing_optimizer import DynamicPositionSizer
 from strategies.wyckoff.wyckoff import WyckoffPnFStrategy, WyckoffSignal
 from config.config import PersonalTradingConfig
 
@@ -1602,6 +1602,16 @@ class SmartFractionalPositionManager:
         self.dynamic_manager = dynamic_account_manager
         self.logger = logger
         self.current_config = None
+        
+        # Add this new section:
+        position_config = {
+            'base_account_allocation': 0.25,
+            'max_position_allocation': 0.15,
+            'vix_threshold': 25.0,
+            'vix_reduction_factor': 0.5,
+            'sector_boost_factor': 0.25
+        }
+        self.position_sizer = DynamicPositionSizer(position_config)
     
     def update_config(self, account_manager):
         """Update configuration based on current account values"""
@@ -1620,13 +1630,19 @@ class SmartFractionalPositionManager:
             self.logger.warning(f"⚠️ Insufficient cash in {target_account.account_type}: ${account_cash:.2f}")
             return 0.0
         
-        # Start with smaller base size
-        base_size = self.current_config['base_position_size']
-        phase_config = self.current_config['wyckoff_phases'].get(signal.phase, {})
-        initial_allocation = phase_config.get('initial_allocation', 0.3)
-        
-        # Calculate position size
-        position_size = base_size * initial_allocation
+        # NEW DYNAMIC POSITION SIZING:
+        sizing_result = self.position_sizer.calculate_dynamic_position_size(
+            account_value=target_account.net_liquidation,
+            symbol=signal.symbol,
+            wyckoff_signal=signal.phase,
+            signal_strength=signal.strength
+        )
+        position_size = sizing_result["final_position_value"]
+
+        # Log the dynamic sizing decision
+        self.logger.info(f"🎯 Dynamic sizing for {signal.symbol}: ${position_size:.2f}")
+        self.logger.info(f"   Signal: {signal.phase}, Strength: {signal.strength:.2f}")
+        self.logger.info(f"   VIX: {sizing_result['current_vix']:.1f}, Regime: {sizing_result['market_regime']}")
         
         # OPTIMIZATION 2: Apply sector regime weighting
         regime_data = self.current_config.get('regime_data')
