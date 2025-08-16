@@ -1,3 +1,4 @@
+from enhanced_cash_manager import EnhancedCashManager
 #!/usr/bin/env python3
 """
 Enhanced Automated Multi-Account Trading System - FIXED MAIN.PY
