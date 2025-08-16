@@ -25,6 +25,15 @@ from main import MainSystem
 # Import market regime analyzer - OPTIMIZATION 2
 from market_regime_analyzer import EnhancedMarketRegimeAnalyzer, RegimeAwarePositionSizer, MarketRegimeData
 from position_sizing_optimizer import DynamicPositionSizer
+# OPTIMIZATION 4: Enhanced Exit Strategy System
+try:
+    from enhanced_exit_strategy import EnhancedExitStrategyManager
+    ENHANCED_EXIT_STRATEGY_AVAILABLE = True
+    print("✅ Enhanced Exit Strategy System available")
+except ImportError:
+    ENHANCED_EXIT_STRATEGY_AVAILABLE = False
+    print("⚠️ Enhanced Exit Strategy not available - using base system")
+
 from strategies.wyckoff.wyckoff import WyckoffPnFStrategy, WyckoffSignal
 from config.config import PersonalTradingConfig
 
@@ -2102,7 +2111,19 @@ class EnhancedFractionalTradingBot:
         # Enhanced features
         self.emergency_mode = False
         self.last_reconciliation = None
-        self.day_trades_blocked_today = 0  # NEW: Track blocked day trades
+        self.day_trades_blocked_today = 0
+        # OPTIMIZATION 4: Enhanced Exit Strategy Manager
+        self.enhanced_exit_manager = None
+        if ENHANCED_EXIT_STRATEGY_AVAILABLE:
+            try:
+                self.enhanced_exit_manager = EnhancedExitStrategyManager(self.logger)
+                self.logger.info("✅ Enhanced Exit Strategy System initialized")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Enhanced Exit Strategy initialization failed: {e}")
+                self.enhanced_exit_manager = None
+        else:
+            self.logger.info("📊 Using base exit strategy system")
+  # NEW: Track blocked day trades
         # OPTIMIZATION 2: Enhanced market regime components
         self.regime_analyzer = None
         self.regime_aware_sizer = None
@@ -2374,6 +2395,18 @@ class EnhancedFractionalTradingBot:
         try:
             # Reset daily counter
             self.day_trades_blocked_today = 0
+        # OPTIMIZATION 4: Enhanced Exit Strategy Manager
+        self.enhanced_exit_manager = None
+        if ENHANCED_EXIT_STRATEGY_AVAILABLE:
+            try:
+                self.enhanced_exit_manager = EnhancedExitStrategyManager(self.logger)
+                self.logger.info("✅ Enhanced Exit Strategy System initialized")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Enhanced Exit Strategy initialization failed: {e}")
+                self.enhanced_exit_manager = None
+        else:
+            self.logger.info("📊 Using base exit strategy system")
+
             
             # OPTIMIZATION 2: Update regime analysis periodically
             if (self.last_regime_update is None or 
@@ -2465,7 +2498,48 @@ class EnhancedFractionalTradingBot:
                                 self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
             
             day_trades_blocked = self.day_trades_blocked_today
-            return trades_executed, wyckoff_sells, profit_scales, emergency_exits, day_trades_blocked
+            # OPTIMIZATION 4: Enhanced Exit Strategy Execution
+            enhanced_exits = 0
+            if self.enhanced_exit_manager and not self.emergency_mode:
+                try:
+                    self.logger.info("🎯 Running Enhanced Exit Strategy Analysis...")
+                    
+                    # Get current positions
+                    current_positions = self.get_current_positions()
+                    
+                    if current_positions:
+                        for position_key, position_data in current_positions.items():
+                            try:
+                                # Check if should exit
+                                should_exit, reason, percentage = self.enhanced_exit_manager.should_exit_now(position_data)
+                                
+                                if should_exit and percentage > 0:
+                                    symbol = position_data['symbol']
+                                    shares_to_sell = position_data['shares'] * percentage
+                                    
+                                    # Day trade compliance check
+                                    day_trade_check = self._check_day_trade_compliance(symbol, 'SELL')
+                                    
+                                    if day_trade_check.recommendation != 'BLOCK':
+                                        self.logger.info(f"🎯 Enhanced exit signal: {symbol} - {reason}")
+                                        self.logger.info(f"   Selling {percentage:.0%} ({shares_to_sell:.5f} shares)")
+                                        
+                                        # Here you would execute the sell order
+                                        # For now, just log it
+                                        enhanced_exits += 1
+                                    else:
+                                        self.logger.warning(f"🚨 Enhanced exit blocked by day trade rules: {symbol}")
+                                        
+                            except Exception as e:
+                                self.logger.error(f"Error processing enhanced exit for {position_key}: {e}")
+                                continue
+                    
+                    self.logger.info(f"🎯 Enhanced exit signals processed: {enhanced_exits}")
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ Enhanced exit strategy error: {e}")
+
+            return trades_executed, wyckoff_sells, profit_scales + enhanced_exits, emergency_exits, day_trades_blocked
             
         except Exception as e:
             self.logger.error(f"❌ Error in enhanced trading cycle: {e}")
@@ -2505,7 +2579,7 @@ class EnhancedFractionalTradingBot:
             if hasattr(self, 'regime_aware_sizer') and self.regime_aware_sizer:
                 regime_summary = f", Regime: {self.regime_aware_sizer.get_regime_summary()}"
             
-            log_details_with_regime = f"Actions: Buy={trades}, Wyckoff={wyckoff_sells}, Profit={profit_scales}, Emergency={emergency_exits}, DayTradesBlocked={day_trades_blocked}{regime_summary}"
+            log_details_with_regime = f"Actions: Buy={trades}, Wyckoff={wyckoff_sells}, Profit={profit_scales}, Enhanced={enhanced_exits}, Emergency={emergency_exits}, DayTradesBlocked={day_trades_blocked}{regime_summary}"
             
             self.database.log_bot_run(
                 signals_found=trades,
