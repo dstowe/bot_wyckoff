@@ -155,21 +155,21 @@ class RegimeAwareConfigManager:
         
         # Base conservative position sizing
         if total_cash < 100:
-            base_position_pct = 0.08
-            max_positions = 3
-            min_balance_pct = 0.40
-        elif total_cash < 300:
             base_position_pct = 0.10
-            max_positions = 4
-            min_balance_pct = 0.30
-        elif total_cash < 500:
-            base_position_pct = 0.12
-            max_positions = 5
+            max_positions = 3
             min_balance_pct = 0.25
-        else:
-            base_position_pct = 0.15
+        elif total_cash < 300:
+            base_position_pct = 0.12
             max_positions = 6
-            min_balance_pct = 0.20
+            min_balance_pct = 0.15
+        elif total_cash < 500:
+            base_position_pct = 0.15
+            max_positions = 12
+            min_balance_pct = 0.12
+        else:
+            base_position_pct = 0.25
+            max_positions = 25
+            min_balance_pct = 0.10
         
         # Apply regime adjustments
         regime_adjusted_position_pct = base_position_pct * regime_multiplier
