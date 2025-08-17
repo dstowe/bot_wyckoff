@@ -132,24 +132,15 @@ class DatabaseManager:
             print("No valid data to save for " + symbol)
             return
 
-        # Ensure index is timezone-naive for SQLite compatibility
-        if data_to_save.index.tz is not None:
-            data_to_save.index = data_to_save.index.tz_localize(None)
+        # # Ensure index is timezone-naive for SQLite compatibility
+        # if data_to_save.index.tz is not None:
+        #     data_to_save.index = data_to_save.index.tz_localize(None)
 
         try:
             with self.conn:
-                min_date, max_date = data_to_save.index.min(), data_to_save.index.max()
-                
-                # Convert Timestamp objects to ISO 8601 string format for SQLite
-                min_date_str = min_date.isoformat()
-                max_date_str = max_date.isoformat()
-                
                 cur = self.conn.cursor()
-                # Use the string versions of the dates in the query
-                cur.execute(
-                    "DELETE FROM stock_data WHERE symbol = ? AND date >= ? AND date <= ?",
-                    (symbol, min_date_str, max_date_str)
-                )
+                # Delete all existing data for this symbol to prevent UNIQUE constraint errors
+                cur.execute("DELETE FROM stock_data WHERE symbol = ?", (symbol,))
                 
                 # Now append the new data
                 data_to_save.to_sql('stock_data', self.conn, if_exists='append', index=True)
