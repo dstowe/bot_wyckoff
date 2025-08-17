@@ -608,7 +608,7 @@ class EnhancedMultiTimeframeWyckoffAnalyzer:
             enhanced_signals.sort(key=lambda x: x.enhanced_strength, reverse=True)
             
             self.logger.info(f"🎯 Found {len(enhanced_signals)} enhanced signals")
-            for signal in enhanced_signals[:5]:
+            for signal in enhanced_signals[:90]:
                 self.logger.info(f"   {signal.symbol}: {signal.signal_quality} - {signal.enhanced_strength:.2f}")
             
             return enhanced_signals
