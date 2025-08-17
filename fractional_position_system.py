@@ -24,6 +24,7 @@ from main import MainSystem
 from strategies.wyckoff.wyckoff import WyckoffPnFStrategy, WyckoffSignal
 from config.config import PersonalTradingConfig
 
+SIGNAL_QUALITY_ENHANCEMENT = False
 
 @dataclass
 class WyckoffWarningSignal:
@@ -1735,6 +1736,16 @@ class EnhancedFractionalTradingBot:
         self.buy_phases = ['ST', 'SOS', 'LPS', 'BU']
         self.sell_phases = ['PS', 'SC']
         
+        # Initialize signal quality analyzer (optional enhancement)
+        self.signal_quality_analyzer = None
+        if SIGNAL_QUALITY_ENHANCEMENT:
+            try:
+                # Would initialize actual analyzer here when implemented
+                # self.signal_quality_analyzer = SignalQualityAnalyzer(self.logger)
+                self.logger.info("🎯 Signal quality enhancement enabled")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Signal quality analyzer failed to initialize: {e}")
+        
         self.setup_logging()
     
     def setup_logging(self):
@@ -1760,6 +1771,17 @@ class EnhancedFractionalTradingBot:
             
             self.main_system = MainSystem()
             self.wyckoff_strategy = WyckoffPnFStrategy()
+
+            # ENHANCEMENT: Signal Quality Analyzer - Strategic Improvement 5 📈
+            try:
+                # Import signal quality analyzer (future implementation)
+                # from .signal_quality_analyzer import SignalQualityAnalyzer
+                SIGNAL_QUALITY_ENHANCEMENT = False  # Set to True when implemented
+                print("⚠️ Signal quality enhancement not yet implemented")
+            except ImportError as e:
+                SIGNAL_QUALITY_ENHANCEMENT = False
+                print(f"⚠️ Signal quality enhancement not available: {e}")
+
             self.database = EnhancedTradingDatabase()
             
             self.dynamic_manager = DynamicAccountManager(self.logger)

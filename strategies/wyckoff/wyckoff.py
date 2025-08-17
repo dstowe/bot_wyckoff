@@ -320,6 +320,7 @@ class WyckoffPnFStrategy:
             self.enhanced_analyzer = None
             self.use_enhanced_analysis = False
             print("📊 Using standard single-timeframe analysis")
+            
 
     def get_sp500_symbols(self) -> List[str]:        
         # A sample of major stocks across different sectors
