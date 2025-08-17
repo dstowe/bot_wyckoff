@@ -3219,19 +3219,11 @@ class EnhancedFractionalTradingBot:
             wyckoff_sells = 0
             profit_scales = 0
             emergency_exits = 0
-            day_trades_blocked = 0
             
             positions_added = 0  # 🔧 CRITICAL FIX: Initialize positions_added
             
             try:
-                # Reset daily counter
-                self.day_trades_blocked_today = 0
         
-                # ENHANCEMENT: Reaccumulation components
-                self.reaccumulation_detector = None
-                self.positions_added_today = 0
-                self.max_position_additions_per_day = 3
-                    
                 # Step 1: Update configuration with conservative sizing
                 config = self.position_manager.update_config(self.main_system.account_manager)
                 
@@ -3324,7 +3316,6 @@ class EnhancedFractionalTradingBot:
                 
             
                 # ENHANCEMENT: Scan for position addition opportunities (BEFORE checking max_positions for NEW trades)
-                positions_added = 0
                 if not self.emergency_mode:
                     self.logger.info("🔍 Scanning for Wyckoff reaccumulation position additions...")
                     

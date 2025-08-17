@@ -320,8 +320,6 @@ class WyckoffPnFStrategy:
             )
             self.use_enhanced_analysis = True
             print("🎯 Enhanced multi-timeframe analysis enabled with DB optimization")
-            self.use_enhanced_analysis = True
-            print("🎯 Enhanced multi-timeframe Wyckoff analysis enabled")
         else:
             self.enhanced_analyzer = None
             self.use_enhanced_analysis = False

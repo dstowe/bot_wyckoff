@@ -31,12 +31,6 @@ class MainSystem:
     def __init__(self):
         # Initialize all attributes first
         self.logger = None
-        self.wb = None
-        self.config = None
-        self.credential_manager = None
-        self.login_manager = None
-        self.session_manager = None
-        self.account_manager = None
         self.is_logged_in = False
         
         # Set up logging first
