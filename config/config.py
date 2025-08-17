@@ -151,6 +151,25 @@ class PersonalTradingConfig:
         }
     }
     
+    
+    
+    # ENHANCEMENT: Wyckoff Reaccumulation Configuration
+    REACCUMULATION_SETTINGS = {
+        'enabled': True,
+        'max_additions_per_position': 3,
+        'max_additions_per_day': 3,
+        'min_days_between_additions': 2,
+        'max_position_size_multiplier': 2.0,
+        'min_addition_percentage': 0.1,
+        'max_addition_percentage': 0.5,
+        'detection_parameters': {
+            'reaccumulation_lookback': 30,
+            'support_test_tolerance': 0.02,
+            'volume_decline_threshold': 0.7,
+            'ranging_threshold': 0.05
+        }
+    }
+    
     def __init__(self):
         """Initialize configuration"""
         pass
