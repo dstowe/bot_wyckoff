@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime, timedelta
 import warnings
-from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -50,9 +49,8 @@ class WyckoffSignal:
 
 
 class DatabaseManager:
-    """Simple, working database manager with fixed f-string issues"""
-    
-    def __init__(self, db_name: str = "data/stock_data.db"):
+    """Handles SQLite database operations for storing and retrieving stock data."""
+    def __init__(self, db_name: str = "stock_data.db"):
         self.db_name = db_name
         # Allow the connection to be used across threads for the ThreadPoolExecutor
         self.conn = sqlite3.connect(self.db_name, check_same_thread=False)
@@ -91,7 +89,7 @@ class DatabaseManager:
                     df.index = df.index.tz_localize(None)
             return df if not df.empty else None
         except Exception as e:
-            print("Error reading from DB for " + symbol + ": " + str(e))
+            print(f"Error reading from DB for {symbol}: {e}")
             return None
 
     def save_data(self, symbol: str, data: pd.DataFrame):
@@ -129,7 +127,7 @@ class DatabaseManager:
         data_to_save.dropna(inplace=True)
         
         if data_to_save.empty:
-            print("No valid data to save for " + symbol)
+            print(f"No valid data to save for {symbol}")
             return
 
         # Ensure index is timezone-naive for SQLite compatibility
@@ -153,12 +151,14 @@ class DatabaseManager:
                 
                 # Now append the new data
                 data_to_save.to_sql('stock_data', self.conn, if_exists='append', index=True)
-                print("Successfully saved data for " + symbol)
         except Exception as e:
-            print("Error saving data to DB for " + symbol + ": " + str(e))
+            print(f"Error saving data to DB for {symbol}: {e}")
+            # Print more debug info
+            print(f"DataFrame columns: {data.columns}")
+            print(f"Data to save columns: {data_to_save.columns}")
 
     def is_data_stale(self, symbol: str) -> bool:
-        """Checks if the data is older than 6 hours (more aggressive than before)."""
+        """Checks if the data is older than the last trading day."""
         cur = self.conn.cursor()
         cur.execute("SELECT MAX(date) FROM stock_data WHERE symbol = ?", (symbol,))
         result = cur.fetchone()[0]
@@ -170,9 +170,10 @@ class DatabaseManager:
         if last_date.tz is not None:
             last_date = last_date.tz_localize(None)
         
-        # More aggressive: stale if data is more than 6 hours old (instead of 3 days)
-        hours_old = (datetime.now() - last_date).total_seconds() / 3600
-        return hours_old > 6
+        # Stale if data is more than 3 days old (to account for weekends)
+        return (datetime.now() - last_date) > timedelta(days=3)
+
+
 class PointFigureChart:
     """Point and Figure Chart implementation"""
 
@@ -313,7 +314,7 @@ class WyckoffPnFStrategy:
     def __init__(self):
         self.wyckoff_analyzer = WyckoffAnalyzer()
         self.sector_analyzer = SectorRotationAnalyzer()
-        self.db_manager = DatabaseManager("data/stock_data.db")
+        self.db_manager = DatabaseManager()
         self.symbols = self.get_sp500_symbols()
         
         # ENHANCEMENT: Initialize multi-timeframe analyzer - Strategic Improvement 5 📈
@@ -364,22 +365,21 @@ class WyckoffPnFStrategy:
             print("Database is up-to-date.")
             return
 
-        print("Downloading fresh data for " + str(len(stale_symbols)) + " symbols...")
+        print(f"Downloading fresh data for {len(stale_symbols)} symbols...")
         # Download symbols individually to avoid multi-index issues
-        success_count = 0
         for i, symbol in enumerate(stale_symbols, 1):
             try:
-                print("Downloading " + symbol + " (" + str(i) + "/" + str(len(stale_symbols)) + ")...")
+                print(f"Downloading {symbol} ({i}/{len(stale_symbols)})...", end='\r')
                 # Use Ticker object for cleaner single-symbol data
                 ticker = yf.Ticker(symbol)
                 df = ticker.history(period='1y', auto_adjust=True)
                 if not df.empty:
                     self.db_manager.save_data(symbol, df)
-                    success_count += 1
             except Exception as e:
-                print("Error downloading " + symbol + ": " + str(e))
+                print(f"\nError downloading {symbol}: {e}")
         
-        print("Database update complete: " + str(success_count) + "/" + str(len(stale_symbols)) + " successful")
+        print("\nDatabase update complete.")
+
     def analyze_symbol(self, symbol: str) -> Optional[WyckoffSignal]:
         try:
             data = self.db_manager.get_data(symbol, period_days=365)

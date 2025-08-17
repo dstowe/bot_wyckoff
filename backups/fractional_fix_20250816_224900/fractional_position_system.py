@@ -2180,19 +2180,6 @@ class EnhancedFractionalTradingBot:
             
             self.main_system = MainSystem()
             self.wyckoff_strategy = WyckoffPnFStrategy()
-            
-            # Ensure the wyckoff strategy uses the correct database path
-            if hasattr(self.wyckoff_strategy, 'db_manager'):
-                # Force the database to use the data folder
-                import sqlite3
-                from pathlib import Path
-                data_folder = Path("data")
-                data_folder.mkdir(exist_ok=True)
-                self.wyckoff_strategy.db_manager.db_name = str(data_folder / "stock_data.db")
-                self.wyckoff_strategy.db_manager.conn = sqlite3.connect(
-                    self.wyckoff_strategy.db_manager.db_name, check_same_thread=False
-                )
-                self.wyckoff_strategy.db_manager.create_table()
             self.database = EnhancedTradingDatabase()
             
             self.dynamic_manager = DynamicAccountManager(self.logger)
@@ -2415,46 +2402,6 @@ class EnhancedFractionalTradingBot:
         except Exception as e:
             self.logger.error(f"❌ Error executing buy for {signal.symbol}: {e}")
             return False
-    def ensure_database_populated(self):
-        """Ensure the database has data for trading"""
-        try:
-            # Check if database has recent data
-            import sqlite3
-            from pathlib import Path
-            from datetime import datetime, timedelta
-            
-            db_path = Path("data/stock_data.db")
-            if not db_path.exists():
-                self.logger.info("📊 Database not found, will be created during update")
-                return True
-            
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
-            # Check if we have any recent data
-            cursor.execute("""
-                SELECT COUNT(*) FROM stock_data 
-                WHERE date >= ? 
-            """, ((datetime.now() - timedelta(days=7)).isoformat(),))
-            
-            recent_count = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(DISTINCT symbol) FROM stock_data")
-            symbol_count = cursor.fetchone()[0]
-            
-            conn.close()
-            
-            if recent_count < 10 or symbol_count < 10:
-                self.logger.info(f"📊 Database has limited data ({symbol_count} symbols, {recent_count} recent records)")
-                self.logger.info("📊 Forcing database update...")
-                return True
-            else:
-                self.logger.info(f"📊 Database has sufficient data ({symbol_count} symbols, {recent_count} recent records)")
-                return False
-                
-        except Exception as e:
-            self.logger.warning(f"⚠️ Could not check database status: {e}")
-            return True  # Force update if we can't check
-
 
     def run_enhanced_trading_cycle(self) -> Tuple[int, int, int, int, int, int]:
             """ENHANCED: Trading cycle with day trade protection"""
@@ -2466,198 +2413,182 @@ class EnhancedFractionalTradingBot:
             enhanced_exits = 0
             
             try:
-            
-                # Ensure database is populated before trading
-                if self.ensure_database_populated():
-                    self.logger.info("🔄 Updating database for current trading session...")
+                # Reset daily counter
+                self.day_trades_blocked_today = 0
+
+                # OPTIMIZATION 4: Enhanced Exit Strategy Manager
+                self.enhanced_exit_manager = None
+                if ENHANCED_EXIT_STRATEGY_AVAILABLE:
                     try:
-                        self.wyckoff_strategy.update_database()
+                        self.enhanced_exit_manager = EnhancedExitStrategyManager(self.logger)
+                        self.logger.info("✅ Enhanced Exit Strategy System initialized")
                     except Exception as e:
-                        self.logger.error(f"❌ Database update failed: {e}")
-                    # Reset daily counter
-                    self.day_trades_blocked_today = 0
+                        self.logger.warning(f"⚠️ Enhanced Exit Strategy initialization failed: {e}")
+                        self.enhanced_exit_manager = None
+                else:
+                    self.logger.info("📊 Using base exit strategy system")
 
-                    # OPTIMIZATION 4: Enhanced Exit Strategy Manager
-                    self.enhanced_exit_manager = None
-                    if ENHANCED_EXIT_STRATEGY_AVAILABLE:
-                        try:
-                            self.enhanced_exit_manager = EnhancedExitStrategyManager(self.logger)
-                            self.logger.info("✅ Enhanced Exit Strategy System initialized")
-                        except Exception as e:
-                            self.logger.warning(f"⚠️ Enhanced Exit Strategy initialization failed: {e}")
-                            self.enhanced_exit_manager = None
-                    else:
-                        self.logger.info("📊 Using base exit strategy system")
+                
+                # OPTIMIZATION 2: Update regime analysis periodically
+                if (self.last_regime_update is None or 
+                    (datetime.now() - self.last_regime_update).total_seconds() > 3600):  # Every hour
+                    
+                    try:
+                        self.logger.info("📊 Updating market regime analysis...")
+                        current_regime = self.regime_analyzer.analyze_market_regime()
+                        
+                        # Check if we should reduce trading activity
+                        if self.regime_aware_sizer.should_reduce_trading_activity():
+                            self.logger.warning("⚠️ Regime suggests reduced trading activity")
+                            self.emergency_mode = True
+                        
+                        self.last_regime_update = datetime.now()
+                        
+                    except Exception as e:
+                        self.logger.error(f"❌ Regime analysis update failed: {e}")
 
-                    
-                    # OPTIMIZATION 2: Update regime analysis periodically
-                    if (self.last_regime_update is None or 
-                        (datetime.now() - self.last_regime_update).total_seconds() > 3600):  # Every hour
+                # Step 1: Update configuration with conservative sizing
+                config = self.position_manager.update_config(self.main_system.account_manager)
+                
+                # Step 2: Get current positions
+                current_positions = self.get_current_positions()
+                
+                # Step 3: Run comprehensive exit analysis
+                self.logger.info("🔍 Running comprehensive exit analysis...")
+                exit_analysis = self.comprehensive_exit_manager.run_comprehensive_analysis(
+                    self.main_system.wb, self.main_system.account_manager, current_positions
+                )
+                
+                # Step 4: Handle critical immediate actions FIRST
+                immediate_actions = exit_analysis['immediate_actions_required']
+                
+                for action in immediate_actions:
+                    if action['urgency'] == 'CRITICAL':
+                        self.logger.warning(f"🚨 CRITICAL: {action['action']} for {action['symbol']} - {action['reason']}")
                         
-                        try:
-                            self.logger.info("📊 Updating market regime analysis...")
-                            current_regime = self.regime_analyzer.analyze_market_regime()
-                            
-                            # Check if we should reduce trading activity
-                            if self.regime_aware_sizer.should_reduce_trading_activity():
-                                self.logger.warning("⚠️ Regime suggests reduced trading activity")
-                                self.emergency_mode = True
-                            
-                            self.last_regime_update = datetime.now()
-                            
-                        except Exception as e:
-                            self.logger.error(f"❌ Regime analysis update failed: {e}")
-
-                    # Step 1: Update configuration with conservative sizing
-                    config = self.position_manager.update_config(self.main_system.account_manager)
+                        # Execute emergency exit logic here
+                        emergency_exits += 1
+                
+                # Step 5: Normal buy logic (only if NOT in emergency mode) WITH DAY TRADE PROTECTION
+                if not self.emergency_mode:
+                    self.logger.info("🔍 Scanning for Wyckoff buy signals...")
+                    signals = self.wyckoff_strategy.scan_market()
                     
-                    # Step 2: Get current positions
-                    current_positions = self.get_current_positions()
-                    
-                    # Step 3: Run comprehensive exit analysis
-                    self.logger.info("🔍 Running comprehensive exit analysis...")
-                    exit_analysis = self.comprehensive_exit_manager.run_comprehensive_analysis(
-                        self.main_system.wb, self.main_system.account_manager, current_positions
-                    )
-                    
-                    # Step 4: Handle critical immediate actions FIRST
-                    immediate_actions = exit_analysis['immediate_actions_required']
-                    
-                    for action in immediate_actions:
-                        if action['urgency'] == 'CRITICAL':
-                            self.logger.warning(f"🚨 CRITICAL: {action['action']} for {action['symbol']} - {action['reason']}")
-                            
-                            # Execute emergency exit logic here
-                            emergency_exits += 1
-                    
-                    # Step 5: Normal buy logic (only if NOT in emergency mode) WITH DAY TRADE PROTECTION
-                    if not self.emergency_mode:
-                        self.logger.info("🔍 Scanning for Wyckoff buy signals...")
-                        # Ensure database is up to date before scanning
-                        print("📊 Ensuring database is up to date...")
-                        try:
-                            self.wyckoff_strategy.update_database()
-                            print("✅ Database update completed")
-                        except Exception as e:
-                            self.logger.error(f"⚠️ Database update warning: {e}")
+                    if signals:
+                        buy_signals = [s for s in signals if (
+                            s.phase in self.buy_phases and 
+                            s.strength >= self.min_signal_strength and
+                            s.volume_confirmation
+                        )]
                         
-                        signals = self.wyckoff_strategy.scan_market()
-                        
-                        if signals:
-                            buy_signals = [s for s in signals if (
-                                s.phase in self.buy_phases and 
-                                s.strength >= self.min_signal_strength and
-                                s.volume_confirmation
-                            )]
+                        if buy_signals and len(current_positions) < config['max_positions']:
+                            enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
                             
-                            if buy_signals and len(current_positions) < config['max_positions']:
-                                enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
+                            
+                        # ENHANCEMENT: Apply signal quality filtering - Strategic Improvement 5 📈
+                        if SIGNAL_QUALITY_ENHANCEMENT and self.signal_quality_analyzer:
+                            try:
+                                enhanced_signals = []
+                                for signal in buy_signals:
+                                    enhanced_result = self.signal_quality_analyzer.analyze_symbol_multi_timeframe(signal.symbol)
+                                    
+                                    if enhanced_result and enhanced_result.signal_quality in ['GOOD', 'EXCELLENT']:
+                                        signal.strength = enhanced_result.enhanced_strength
+                                        signal.combined_score = enhanced_result.confirmation_score
+                                        enhanced_signals.append(signal)
+                                        
+                                        self.logger.info(f"🎯 {signal.symbol}: {enhanced_result.signal_quality} quality "
+                                                       f"(Phases: {enhanced_result.primary_phase}/"
+                                                       f"{enhanced_result.entry_timing_phase}/"
+                                                       f"{enhanced_result.precision_phase})")
                                 
+                                if enhanced_signals:
+                                    self.logger.info(f"📈 Quality Enhancement: {len(enhanced_signals)}/{len(buy_signals)} signals passed")
+                                    buy_signals = enhanced_signals
+                                else:
+                                    self.logger.info(f"⚠️ Quality Enhancement: No signals met criteria")
+                                    buy_signals = []
+                                    
+                            except Exception as e:
+                                self.logger.warning(f"⚠️ Signal quality enhancement failed: {e}")
+
+                        # FIXED: Conservative approach to signal selection WITH DAY TRADE CHECKING
+                            for signal in buy_signals[:max(1, config['max_positions'] - len(current_positions))]:
                                 
-                            # ENHANCEMENT: Apply signal quality filtering - Strategic Improvement 5 📈
-                            if SIGNAL_QUALITY_ENHANCEMENT and self.signal_quality_analyzer:
+                                # STEP 1: Check day trade compliance BEFORE calculating position size
+                                day_trade_check = self._check_day_trade_compliance(signal.symbol, 'BUY')
+                                
+                                if day_trade_check.recommendation == 'BLOCK':
+                                    self.logger.warning(f"🚨 BUY SIGNAL BLOCKED BY DAY TRADE RULES: {signal.symbol}")
+                                    self.day_trades_blocked_today += 1
+                                    continue  # Skip this signal
+                                
+                                best_account = max(enabled_accounts, key=lambda x: x.settled_funds)
+                                
+                                # FIXED: Use the new conservative position sizing
+                                position_size = self.position_manager.get_position_size_for_signal(signal, best_account)
+                                # OPTIMIZATION 2: Use regime-aware position sizing
+                                if hasattr(self, 'regime_aware_sizer') and self.regime_aware_sizer:
+                                    position_size = self.regime_aware_sizer.get_regime_adjusted_position_size(
+                                        signal, best_account, position_size
+                                    )
+                                
+                                # Only proceed if we have a viable position size and sufficient cash
+                                if (position_size > 0 and 
+                                    best_account.settled_funds >= position_size + config.get('min_cash_buffer_per_account', 15.0)):
+                                    
+                                    if self.execute_buy_order(signal, best_account, position_size):
+                                        trades_executed += 1
+                                        best_account.settled_funds -= position_size
+                                        
+                                        # Add small delay between orders
+                                        time.sleep(2)
+                                else:
+                                    self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
+                
+                day_trades_blocked = self.day_trades_blocked_today
+                # OPTIMIZATION 4: Enhanced Exit Strategy Execution
+                if self.enhanced_exit_manager and not self.emergency_mode:
+                    try:
+                        self.logger.info("🎯 Running Enhanced Exit Strategy Analysis...")
+                        
+                        # Get current positions
+                        current_positions = self.get_current_positions()
+                        
+                        if current_positions:
+                            for position_key, position_data in current_positions.items():
                                 try:
-                                    enhanced_signals = []
-                                    for signal in buy_signals:
-                                        enhanced_result = self.signal_quality_analyzer.analyze_symbol_multi_timeframe(signal.symbol)
-                                        
-                                        if enhanced_result and enhanced_result.signal_quality in ['GOOD', 'EXCELLENT']:
-                                            signal.strength = enhanced_result.enhanced_strength
-                                            signal.combined_score = enhanced_result.confirmation_score
-                                            enhanced_signals.append(signal)
-                                            
-                                            self.logger.info(f"🎯 {signal.symbol}: {enhanced_result.signal_quality} quality "
-                                                        f"(Phases: {enhanced_result.primary_phase}/"
-                                                        f"{enhanced_result.entry_timing_phase}/"
-                                                        f"{enhanced_result.precision_phase})")
+                                    # Check if should exit
+                                    should_exit, reason, percentage = self.enhanced_exit_manager.should_exit_now(position_data)
                                     
-                                    if enhanced_signals:
-                                        self.logger.info(f"📈 Quality Enhancement: {len(enhanced_signals)}/{len(buy_signals)} signals passed")
-                                        buy_signals = enhanced_signals
-                                    else:
-                                        self.logger.info(f"⚠️ Quality Enhancement: No signals met criteria")
-                                        buy_signals = []
+                                    if should_exit and percentage > 0:
+                                        symbol = position_data['symbol']
+                                        shares_to_sell = position_data['shares'] * percentage
                                         
+                                        # Day trade compliance check
+                                        day_trade_check = self._check_day_trade_compliance(symbol, 'SELL')
+                                        
+                                        if day_trade_check.recommendation != 'BLOCK':
+                                            self.logger.info(f"🎯 Enhanced exit signal: {symbol} - {reason}")
+                                            self.logger.info(f"   Selling {percentage:.0%} ({shares_to_sell:.5f} shares)")
+                                            
+                                            # Here you would execute the sell order
+                                            # For now, just log it
+                                            enhanced_exits += 1
+                                        else:
+                                            self.logger.warning(f"🚨 Enhanced exit blocked by day trade rules: {symbol}")
+                                            
                                 except Exception as e:
-                                    self.logger.warning(f"⚠️ Signal quality enhancement failed: {e}")
+                                    self.logger.error(f"Error processing enhanced exit for {position_key}: {e}")
+                                    continue
+                        
+                        self.logger.info(f"🎯 Enhanced exit signals processed: {enhanced_exits}")
+                        
+                    except Exception as e:
+                        self.logger.error(f"❌ Enhanced exit strategy error: {e}")
 
-                            # FIXED: Conservative approach to signal selection WITH DAY TRADE CHECKING
-                                for signal in buy_signals[:max(1, config['max_positions'] - len(current_positions))]:
-                                    
-                                    # STEP 1: Check day trade compliance BEFORE calculating position size
-                                    day_trade_check = self._check_day_trade_compliance(signal.symbol, 'BUY')
-                                    
-                                    if day_trade_check.recommendation == 'BLOCK':
-                                        self.logger.warning(f"🚨 BUY SIGNAL BLOCKED BY DAY TRADE RULES: {signal.symbol}")
-                                        self.day_trades_blocked_today += 1
-                                        continue  # Skip this signal
-                                    
-                                    best_account = max(enabled_accounts, key=lambda x: x.settled_funds)
-                                    
-                                    # FIXED: Use the new conservative position sizing
-                                    position_size = self.position_manager.get_position_size_for_signal(signal, best_account)
-                                    # OPTIMIZATION 2: Use regime-aware position sizing
-                                    if hasattr(self, 'regime_aware_sizer') and self.regime_aware_sizer:
-                                        position_size = self.regime_aware_sizer.get_regime_adjusted_position_size(
-                                            signal, best_account, position_size
-                                        )
-                                    
-                                    # Only proceed if we have a viable position size and sufficient cash
-                                    if (position_size > 0 and 
-                                        best_account.settled_funds >= position_size + config.get('min_cash_buffer_per_account', 15.0)):
-                                        
-                                        if self.execute_buy_order(signal, best_account, position_size):
-                                            trades_executed += 1
-                                            best_account.settled_funds -= position_size
-                                            
-                                            # Add small delay between orders
-                                            time.sleep(2)
-                                    else:
-                                        self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
-                    
-                    day_trades_blocked = self.day_trades_blocked_today
-                    # OPTIMIZATION 4: Enhanced Exit Strategy Execution
-                    if self.enhanced_exit_manager and not self.emergency_mode:
-                        try:
-                            self.logger.info("🎯 Running Enhanced Exit Strategy Analysis...")
-                            
-                            # Get current positions
-                            current_positions = self.get_current_positions()
-                            
-                            if current_positions:
-                                for position_key, position_data in current_positions.items():
-                                    try:
-                                        # Check if should exit
-                                        should_exit, reason, percentage = self.enhanced_exit_manager.should_exit_now(position_data)
-                                        
-                                        if should_exit and percentage > 0:
-                                            symbol = position_data['symbol']
-                                            shares_to_sell = position_data['shares'] * percentage
-                                            
-                                            # Day trade compliance check
-                                            day_trade_check = self._check_day_trade_compliance(symbol, 'SELL')
-                                            
-                                            if day_trade_check.recommendation != 'BLOCK':
-                                                self.logger.info(f"🎯 Enhanced exit signal: {symbol} - {reason}")
-                                                self.logger.info(f"   Selling {percentage:.0%} ({shares_to_sell:.5f} shares)")
-                                                
-                                                # Here you would execute the sell order
-                                                # For now, just log it
-                                                enhanced_exits += 1
-                                            else:
-                                                self.logger.warning(f"🚨 Enhanced exit blocked by day trade rules: {symbol}")
-                                                
-                                    except Exception as e:
-                                        self.logger.error(f"Error processing enhanced exit for {position_key}: {e}")
-                                        continue
-                            
-                            self.logger.info(f"🎯 Enhanced exit signals processed: {enhanced_exits}")
-                            
-                        except Exception as e:
-                            self.logger.error(f"❌ Enhanced exit strategy error: {e}")
-
-                    return trades_executed, wyckoff_sells, profit_scales, enhanced_exits, emergency_exits, day_trades_blocked
-                    
+                return trades_executed, wyckoff_sells, profit_scales, enhanced_exits, emergency_exits, day_trades_blocked
+                
             except Exception as e:
                 self.logger.error(f"❌ Error in enhanced trading cycle: {e}")
                 return trades_executed, wyckoff_sells, profit_scales, enhanced_exits, emergency_exits, self.day_trades_blocked_today
