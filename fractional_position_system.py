@@ -30,8 +30,6 @@ import yfinance as yf
 from strategies.wyckoff.wyckoff import WyckoffPnFStrategy, WyckoffSignal
 from config.config import PersonalTradingConfig
 
-SIGNAL_QUALITY_ENHANCEMENT = False
-
 @dataclass
 class WyckoffWarningSignal:
     """Advanced Wyckoff warning signals for exits"""
@@ -1934,9 +1932,7 @@ class ComprehensiveExitManager:
                     
                     self.logger.info(f"Discrepancy: {symbol} Real={real_shares:.5f}, DB={bot_shares:.5f}")
                     
-                    # Auto-correct the position
-                    if self._auto_correct_position_by_account(symbol, account_type, real_shares, real_pos['avg_cost']):
-                        reconciliation_report['positions_corrected'] += 1
+
                 else:
                     self.logger.debug(f"Position matches: {position_key}")
                     
@@ -2075,17 +2071,7 @@ class EnhancedFractionalTradingBot:
         # Trading parameters
         self.min_signal_strength = 0.5
         self.buy_phases = ['ST', 'SOS', 'LPS', 'BU']
-        self.sell_phases = ['PS', 'SC']
-        
-        # Initialize signal quality analyzer (optional enhancement)
-        self.signal_quality_analyzer = None
-        if SIGNAL_QUALITY_ENHANCEMENT:
-            try:
-                # Would initialize actual analyzer here when implemented
-                # self.signal_quality_analyzer = SignalQualityAnalyzer(self.logger)
-                self.logger.info("🎯 Signal quality enhancement enabled")
-            except Exception as e:
-                self.logger.warning(f"⚠️ Signal quality analyzer failed to initialize: {e}")
+        self.sell_phases = ['PS', 'SC']        
         
         self.setup_logging()
     
@@ -2112,16 +2098,6 @@ class EnhancedFractionalTradingBot:
             
             self.main_system = MainSystem()
             self.wyckoff_strategy = WyckoffPnFStrategy()
-
-            # ENHANCEMENT: Signal Quality Analyzer - Strategic Improvement 5 📈
-            try:
-                # Import signal quality analyzer (future implementation)
-                # from .signal_quality_analyzer import SignalQualityAnalyzer
-                SIGNAL_QUALITY_ENHANCEMENT = False  # Set to True when implemented
-                print("⚠️ Signal quality enhancement not yet implemented")
-            except ImportError as e:
-                SIGNAL_QUALITY_ENHANCEMENT = False
-                print(f"⚠️ Signal quality enhancement not available: {e}")
 
             self.database = EnhancedTradingDatabase()
             
@@ -3360,30 +3336,8 @@ class EnhancedFractionalTradingBot:
                             self.logger.info(f"📊 Initial screening: {len(buy_signals)}/{len(signals)} signals passed basic criteria")
                             
                             if buy_signals and len(current_positions) < config['max_positions']:
-                                enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
-                                
-                                # ENHANCEMENT: Apply signal quality filtering - Strategic Improvement 5 📈
-                                if signals:
-                                                    buy_signals = [s for s in signals if (
-                                                        s.phase in self.buy_phases and 
-                                                        s.strength >= self.min_signal_strength and
-                                                        s.volume_confirmation
-                                                    )]
-                                                    
-                                                    self.logger.info(f"📊 Initial screening: {len(buy_signals)}/{len(signals)} signals passed basic criteria")
-                                                    
-                                                    if buy_signals and len(current_positions) < config['max_positions']:
-                                                        enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
-                                                        
-                                                        # The signals from scan_market_enhanced() are already enhanced with multi-timeframe analysis
-                                                        # No need to re-analyze them here - just use the enhanced signals directly
-                                                        
-                                                        if buy_signals:
-                                                            self.logger.info(f"🎯 Processing {len(buy_signals)} enhanced signals from Wyckoff strategy")
-                                                            enhanced_count = sum(1 for s in buy_signals if hasattr(s, 'combined_score'))
-                                                            if enhanced_count > 0:
-                                                                self.logger.info(f"✨ {enhanced_count}/{len(buy_signals)} signals have enhanced multi-timeframe data")
-
+                                enabled_accounts = self.main_system.account_manager.get_enabled_accounts()                              
+                               
 
                             # Process buy signals WITH DAY TRADE CHECKING
                             for signal in buy_signals[:max(1, config['max_positions'] - len(current_positions))]:
@@ -3398,32 +3352,22 @@ class EnhancedFractionalTradingBot:
                                 
                                 best_account = max(enabled_accounts, key=lambda x: x.settled_funds)
                                 
-                                # Use regime-aware position sizing if available
                                 position_size = self.position_manager.get_position_size_for_signal(signal, best_account)
-                                if hasattr(self, 'regime_aware_sizer') and self.regime_aware_sizer:
-                                    position_size = self.regime_aware_sizer.get_regime_adjusted_position_size(
-                                        signal, best_account, position_size
-                                    )
+
                                 
                                 # Only proceed if we have a viable position size and sufficient cash
                                 if (position_size > 0 and 
                                     best_account.settled_funds >= position_size + config.get('min_cash_buffer_per_account', 15.0)):
                                     
-                                    # Enhanced logging for signal execution
-                                    if hasattr(signal, 'combined_score'):
-                                        self.logger.info(f"💰 Executing enhanced signal: {signal.symbol}")
-                                        self.logger.info(f"   🎯 Quality score: {signal.combined_score:.2f}")
-                                        self.logger.info(f"   💪 Enhanced strength: {signal.strength:.2f}")
-                                    else:
-                                        self.logger.info(f"💰 Executing standard signal: {signal.symbol}")
-                                        self.logger.info(f"   💪 Signal strength: {signal.strength:.2f}")
+                                    self.logger.info(f"💰 Executing signal: {signal.symbol} (strength: {signal.strength:.2f})")
+
                                     # TEMPORARILY BLOCK BUY UNCOMMENT TO ENABLE TRADE EXECUTION
-                                    if self.execute_buy_order(signal, best_account, position_size):
-                                        trades_executed += 1
-                                        best_account.settled_funds -= position_size
+                                    # if self.execute_buy_order(signal, best_account, position_size):
+                                    #     trades_executed += 1
+                                    #     best_account.settled_funds -= position_size
                                         
-                                        # Add small delay between orders
-                                        time.sleep(2)
+                                    #     # Add small delay between orders
+                                    #     time.sleep(2)
                                 else:
                                     self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
                     else:
