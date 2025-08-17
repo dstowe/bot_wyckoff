@@ -132,9 +132,9 @@ class DatabaseManager:
             print("No valid data to save for " + symbol)
             return
 
-        # # Ensure index is timezone-naive for SQLite compatibility
-        # if data_to_save.index.tz is not None:
-        #     data_to_save.index = data_to_save.index.tz_localize(None)
+        # Ensure index is timezone-naive for SQLite compatibility
+        if data_to_save.index.tz is not None:
+            data_to_save.index = data_to_save.index.tz_localize(None)
 
         try:
             with self.conn:
