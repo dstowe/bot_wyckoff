@@ -36,6 +36,7 @@ class LoginManager:
                 
                 # Set DID if provided
                 if credentials.get('did'):
+                    self.wb._did = credentials['did']
                     self.wb._set_did(credentials['did'])
                     self.logger.info("DID set from stored credentials")
                 
