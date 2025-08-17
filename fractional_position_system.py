@@ -1095,11 +1095,11 @@ class DynamicAccountManager:
             min_balance_pct = 0.30  # Keep 30% cash
         elif total_cash < 500:
             base_position_pct = 0.12  # 12% of total cash
-            max_positions = 4
+            max_positions = 5
             min_balance_pct = 0.25  # Keep 25% cash
         else:
             base_position_pct = 0.15  # 15% of total cash
-            max_positions = 5
+            max_positions = 6
             min_balance_pct = 0.20  # Keep 20% cash
         
         # FIXED: Calculate based on per-account maximum to prevent overdrafts
@@ -1990,10 +1990,13 @@ class EnhancedFractionalTradingBot:
                 
                 # Check if it's a session issue
                 if 'session' in error_msg.lower() or 'expired' in error_msg.lower():
-                    self.logger.warning("⚠️ Session issue detected - will retry on next run")
+                    self.logger.warning("⚠️ Session issue detected. . Logging in again.")
                     # Clear session to force fresh login next time
                     self.main_system.session_manager.clear_session()
-                
+
+                    self.main_system.login_manager.login_automatically()
+                    # Save the refreshed session
+                    self.main_system.session_manager.save_session(self.main_system.wb)
                 return False
                 
         except Exception as e:
@@ -2460,9 +2463,11 @@ class EnhancedFractionalTradingBot:
                     
                     # Check if it's a session issue
                     if 'session' in error_msg.lower() or 'expired' in error_msg.lower():
-                        self.logger.warning("⚠️ Session issue detected during profit scaling")
+                        self.logger.warning("⚠️ Session issue detected during profit scaling. Logging in again.")
                         self.main_system.session_manager.clear_session()
-                    
+                        self.main_system.login_manager.login_automatically()
+                        # Save the refreshed session
+                        self.main_system.session_manager.save_session(self.main_system.wb)
                     return False
             
             # If we executed any orders successfully
