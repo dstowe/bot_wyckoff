@@ -2723,7 +2723,7 @@ class EnhancedFractionalTradingBot:
                                     else:
                                         self.logger.info(f"💰 Executing standard signal: {signal.symbol}")
                                         self.logger.info(f"   💪 Signal strength: {signal.strength:.2f}")
-                                    
+                                    # TEMPORARILY BLOCK BUY UNCOMMENT TO ENABLE TRADE EXECUTION
                                     # if self.execute_buy_order(signal, best_account, position_size):
                                     #     trades_executed += 1
                                     #     best_account.settled_funds -= position_size
