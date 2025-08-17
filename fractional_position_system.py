@@ -44,16 +44,6 @@ class WyckoffWarningSignal:
     context: str
     urgency: str  # 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'
 
-@dataclass
-class ReaccumulationSignal:
-    """Signal for adding to existing positions during reaccumulation"""
-    symbol: str
-    phase_type: str
-    strength: float
-    current_price: float
-    support_level: float
-    addition_percentage: float
-    reasoning: str
 
 @dataclass
 class PositionRisk:
