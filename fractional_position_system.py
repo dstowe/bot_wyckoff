@@ -1096,11 +1096,11 @@ class DynamicAccountManager:
             min_balance_pct = 0.30  # Keep 30% cash
         elif total_cash < 500:
             base_position_pct = 0.12  # 12% of total cash
-            max_positions = 5
+            max_positions = 7
             min_balance_pct = 0.25  # Keep 25% cash
         else:
             base_position_pct = 0.15  # 15% of total cash
-            max_positions = 6
+            max_positions = 12
             min_balance_pct = 0.20  # Keep 20% cash
         
         # FIXED: Calculate based on per-account maximum to prevent overdrafts
@@ -2724,12 +2724,12 @@ class EnhancedFractionalTradingBot:
                                         self.logger.info(f"💰 Executing standard signal: {signal.symbol}")
                                         self.logger.info(f"   💪 Signal strength: {signal.strength:.2f}")
                                     # TEMPORARILY BLOCK BUY UNCOMMENT TO ENABLE TRADE EXECUTION
-                                    # if self.execute_buy_order(signal, best_account, position_size):
-                                    #     trades_executed += 1
-                                    #     best_account.settled_funds -= position_size
+                                    if self.execute_buy_order(signal, best_account, position_size):
+                                        trades_executed += 1
+                                        best_account.settled_funds -= position_size
                                         
-                                    #     # Add small delay between orders
-                                    #     time.sleep(2)
+                                        # Add small delay between orders
+                                        time.sleep(2)
                                 else:
                                     self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
                     else:

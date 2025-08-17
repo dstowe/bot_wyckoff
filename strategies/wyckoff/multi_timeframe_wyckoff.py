@@ -646,9 +646,13 @@ class EnhancedMultiTimeframeWyckoffAnalyzer:
                 good_signals = [s for s in enhanced_signals if s.signal_quality == 'GOOD']
                 
                 if excellent_signals:
-                    self.logger.info(f"🌟 EXCELLENT signals: {[s.symbol for s in excellent_signals[:10]]}")
+                    excellent_symbols = [s.symbol for s in excellent_signals]
+                    self.logger.info(f"🌟 ALL {len(excellent_signals)} EXCELLENT signals: {excellent_symbols}")
+                    
                 if good_signals:
-                    self.logger.info(f"✅ GOOD signals: {[s.symbol for s in good_signals[:10]]}")
+                    good_symbols = [s.symbol for s in good_signals]  
+                    self.logger.info(f"✅ ALL {len(good_signals)} GOOD signals: {good_symbols}")
+
                 
                 self.logger.info(f"🎯 Total enhanced signals found: {len(enhanced_signals)}")
                 
