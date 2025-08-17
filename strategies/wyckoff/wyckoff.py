@@ -57,6 +57,12 @@ class DatabaseManager:
         # Allow the connection to be used across threads for the ThreadPoolExecutor
         self.conn = sqlite3.connect(self.db_name, check_same_thread=False)
         self.create_table()
+        # Enable WAL mode for better concurrent access
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
+        self.conn.execute("PRAGMA cache_size=10000")
+        self.conn.commit()
+
 
     def create_table(self):
         query = """

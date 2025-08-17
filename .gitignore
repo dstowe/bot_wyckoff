@@ -11,6 +11,8 @@
 # Debug and development files
 /tests/
 
+/backups
+
 # Logs
 /logs
 
