@@ -2180,6 +2180,16 @@ class EnhancedFractionalTradingBot:
             
             self.main_system = MainSystem()
             self.wyckoff_strategy = WyckoffPnFStrategy()
+
+            # Ensure multi-timeframe analyzer uses shared database
+            if (hasattr(self.wyckoff_strategy, 'enhanced_analyzer') and 
+                self.wyckoff_strategy.enhanced_analyzer and
+                hasattr(self.wyckoff_strategy, 'db_manager')):
+                
+                # Update the database manager reference if not already set
+                if self.wyckoff_strategy.enhanced_analyzer.db_manager is None:
+                    self.wyckoff_strategy.enhanced_analyzer.db_manager = self.wyckoff_strategy.db_manager
+                    self.logger.info("🔗 Linked multi-timeframe analyzer to shared database")            
             
             # Ensure the wyckoff strategy uses the correct database path
             if hasattr(self.wyckoff_strategy, 'db_manager'):
@@ -2539,13 +2549,14 @@ class EnhancedFractionalTradingBot:
             # Step 5: Normal buy logic (only if NOT in emergency mode) WITH DAY TRADE PROTECTION
             if not self.emergency_mode:
                 self.logger.info("🔍 Scanning for Wyckoff buy signals...")
-                try:
-                    self.wyckoff_strategy.update_database()
-                    self.logger.debug("✅ Database refreshed for signal scanning")
-                except Exception as e:
-                    self.logger.error(f"⚠️ Database update warning: {e}")
                 
+            # Use enhanced multi-timeframe scanning if available
+            if hasattr(self.wyckoff_strategy, 'use_enhanced_analysis') and self.wyckoff_strategy.use_enhanced_analysis:
+                signals = self.wyckoff_strategy.scan_market_enhanced()
+                self.logger.info("🎯 Using enhanced multi-timeframe signal scanning")
+            else:
                 signals = self.wyckoff_strategy.scan_market()
+                self.logger.info("📊 Using standard single-timeframe scanning")
                 
                 if signals:
                     buy_signals = [s for s in signals if (

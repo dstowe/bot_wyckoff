@@ -307,9 +307,13 @@ class WyckoffPnFStrategy:
         self.db_manager = DatabaseManager("data/stock_data.db")
         self.symbols = self.get_sp500_symbols()
         
-        # ENHANCEMENT: Initialize multi-timeframe analyzer - Strategic Improvement 5 📈
+        # ENHANCEMENT: Initialize multi-timeframe analyzer WITH database sharing
         if MULTI_TIMEFRAME_AVAILABLE:
-            self.enhanced_analyzer = EnhancedMultiTimeframeWyckoffAnalyzer()
+            self.enhanced_analyzer = EnhancedMultiTimeframeWyckoffAnalyzer(
+                db_manager=self.db_manager  # Pass database manager to avoid duplicate downloads
+            )
+            self.use_enhanced_analysis = True
+            print("🎯 Enhanced multi-timeframe analysis enabled with DB optimization")
             self.use_enhanced_analysis = True
             print("🎯 Enhanced multi-timeframe Wyckoff analysis enabled")
         else:

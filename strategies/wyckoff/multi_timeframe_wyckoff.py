@@ -60,9 +60,12 @@ class TimeframeAnalysis:
 class EnhancedMultiTimeframeWyckoffAnalyzer:
     """Enhanced Wyckoff analyzer with multi-timeframe confirmation"""
     
-    def __init__(self, logger=None):
+    def __init__(self, logger=None, db_manager=None):
         self.logger = logger or logging.getLogger(__name__)
         
+        # NEW: Accept database manager to avoid duplicate downloads
+        self.db_manager = db_manager
+
         # Timeframe configurations
         self.timeframes = {
             'daily': {'period': '1y', 'interval': '1d', 'min_bars': 50, 'weight': 0.5},
@@ -115,13 +118,40 @@ class EnhancedMultiTimeframeWyckoffAnalyzer:
             return None
     
     def _fetch_multi_timeframe_data(self, symbol: str) -> Dict[str, pd.DataFrame]:
-        """Fetch data for all required timeframes"""
+        """Fetch data for all required timeframes with database optimization"""
         timeframe_data = {}
         
         try:
+            # OPTIMIZATION: Use stored daily data first
+            if self.db_manager is not None:
+                try:
+                    stored_daily = self.db_manager.get_data(symbol, period_days=365)
+                    if stored_daily is not None and len(stored_daily) >= self.timeframes['daily']['min_bars']:
+                        # Handle database column naming (lowercase vs uppercase)
+                        if 'open' in stored_daily.columns:
+                            # Convert to yfinance format
+                            column_mapping = {
+                                'open': 'Open', 'high': 'High', 'low': 'Low',
+                                'close': 'Close', 'volume': 'Volume'
+                            }
+                            stored_daily = stored_daily.rename(columns=column_mapping)
+                        
+                        # Verify required columns exist
+                        required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+                        if all(col in stored_daily.columns for col in required_cols):
+                            timeframe_data['daily'] = stored_daily
+                            self.logger.debug(f"✅ Using stored daily data for {symbol}")
+                except Exception as e:
+                    self.logger.debug(f"⚠️ Error accessing stored data for {symbol}: {e}")
+            
+            # Fetch missing timeframes from yfinance
             ticker = yf.Ticker(symbol)
             
             for tf_name, config in self.timeframes.items():
+                # Skip daily if we already got it from database
+                if tf_name == 'daily' and tf_name in timeframe_data:
+                    continue
+                
                 try:
                     data = ticker.history(period=config['period'], interval=config['interval'])
                     
@@ -129,12 +159,14 @@ class EnhancedMultiTimeframeWyckoffAnalyzer:
                         required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
                         if all(col in data.columns for col in required_cols):
                             timeframe_data[tf_name] = data
+                            self.logger.debug(f"📥 Downloaded {tf_name} data for {symbol}")
                 except Exception:
                     continue
             
             return timeframe_data
             
-        except Exception:
+        except Exception as e:
+            self.logger.debug(f"❌ Error in multi-timeframe data fetch for {symbol}: {e}")
             return {}
     
     def _analyze_single_timeframe(self, symbol: str, timeframe: str, data: pd.DataFrame) -> Optional[TimeframeAnalysis]:
