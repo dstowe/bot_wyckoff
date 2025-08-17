@@ -481,6 +481,7 @@ Signals Found: {len(signals)}
                         legacy_signals.append(legacy_signal)
                 
                 print(f"🎯 Enhanced analysis found {len(legacy_signals)} high-quality signals")
+                
                 return legacy_signals
             else:
                 return self.scan_market(max_workers)

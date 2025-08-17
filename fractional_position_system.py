@@ -1234,7 +1234,7 @@ class DynamicAccountManager:
     accounts: List, regime_multiplier: float, 
     regime_data: Optional[MarketRegimeData]) -> Dict:
         """OPTIMIZATION 2: Calculate regime-aware parameters"""
-        
+        self.logger.info("🔍 DEBUG: Using FIRST regime method")
         # Find the account with the most cash for primary trading
         max_cash_available = max(acc.settled_funds for acc in accounts) if accounts else total_cash
         
@@ -1711,7 +1711,7 @@ class SmartFractionalPositionManager:
     accounts: List, regime_multiplier: float, 
     regime_data: Optional[MarketRegimeData]) -> Dict:
         """OPTIMIZATION 2: Calculate regime-aware parameters"""
-        
+        self.logger.info("🔍 DEBUG: Using SECOND regime method")
         # Find the account with the most cash for primary trading
         max_cash_available = max(acc.settled_funds for acc in accounts) if accounts else total_cash
         
@@ -2550,20 +2550,97 @@ class EnhancedFractionalTradingBot:
             if not self.emergency_mode:
                 self.logger.info("🔍 Scanning for Wyckoff buy signals...")
                 
-            # Use enhanced multi-timeframe scanning if available
-            if hasattr(self.wyckoff_strategy, 'use_enhanced_analysis') and self.wyckoff_strategy.use_enhanced_analysis:
-                signals = self.wyckoff_strategy.scan_market_enhanced()
-                self.logger.info("🎯 Using enhanced multi-timeframe signal scanning")
-            else:
-                signals = self.wyckoff_strategy.scan_market()
-                self.logger.info("📊 Using standard single-timeframe scanning")
+                # Use enhanced multi-timeframe scanning if available
+                if hasattr(self.wyckoff_strategy, 'use_enhanced_analysis') and self.wyckoff_strategy.use_enhanced_analysis:
+                    signals = self.wyckoff_strategy.scan_market_enhanced()
+                    # Quick debug - add after line that says "🎯 Enhanced analysis found 90 high-quality signals"
+                    self.logger.info(f"🔍 QUICK DEBUG:")
+                    self.logger.info(f"   Current positions: {len(current_positions)}")
+                    self.logger.info(f"   Max positions: {config.get('max_positions', 'NOT SET')}")
+                    self.logger.info(f"   Emergency mode: {self.emergency_mode}")
+                    self.logger.info(f"   Signals type: {type(signals)}")
+                    self.logger.info(f"   Signals length: {len(signals) if signals else 0}")
+                    if signals and len(signals) > 0:
+                        first_signal = signals[0]
+                        self.logger.info(f"   First signal: {first_signal.symbol} - {first_signal.phase} - {first_signal.strength}")
+                    
+                    self.logger.info("🎯 Using enhanced multi-timeframe signal scanning")
+                else:
+                    signals = self.wyckoff_strategy.scan_market()
+                    self.logger.info("📊 Using standard single-timeframe scanning")
                 
+                # FIXED: Move the signal processing logic OUTSIDE the if/else
                 if signals:
                     buy_signals = [s for s in signals if (
                         s.phase in self.buy_phases and 
                         s.strength >= self.min_signal_strength and
                         s.volume_confirmation
                     )]
+                    
+                    if buy_signals and len(current_positions) < config['max_positions']:
+                        enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
+                        
+                        # ENHANCEMENT: Apply signal quality filtering - Strategic Improvement 5 📈
+                        if SIGNAL_QUALITY_ENHANCEMENT and self.signal_quality_analyzer:
+                            try:
+                                enhanced_signals = []
+                                for signal in buy_signals:
+                                    enhanced_result = self.signal_quality_analyzer.analyze_symbol_multi_timeframe(signal.symbol)
+                                    
+                                    if enhanced_result and enhanced_result.signal_quality in ['GOOD', 'EXCELLENT']:
+                                        signal.strength = enhanced_result.enhanced_strength
+                                        signal.combined_score = enhanced_result.confirmation_score
+                                        enhanced_signals.append(signal)
+                                        
+                                        self.logger.info(f"🎯 {signal.symbol}: {enhanced_result.signal_quality} quality "
+                                                    f"(Phases: {enhanced_result.primary_phase}/"
+                                                    f"{enhanced_result.entry_timing_phase}/"
+                                                    f"{enhanced_result.precision_phase})")
+                                
+                                if enhanced_signals:
+                                    self.logger.info(f"📈 Quality Enhancement: {len(enhanced_signals)}/{len(buy_signals)} signals passed")
+                                    buy_signals = enhanced_signals
+                                else:
+                                    self.logger.info(f"⚠️ Quality Enhancement: No signals met criteria")
+                                    buy_signals = []
+                                    
+                            except Exception as e:
+                                self.logger.warning(f"⚠️ Signal quality enhancement failed: {e}")
+
+                        # Process buy signals WITH DAY TRADE CHECKING
+                        for signal in buy_signals[:max(1, config['max_positions'] - len(current_positions))]:
+                            
+                            # STEP 1: Check day trade compliance BEFORE calculating position size
+                            day_trade_check = self._check_day_trade_compliance(signal.symbol, 'BUY')
+                            
+                            if day_trade_check.recommendation == 'BLOCK':
+                                self.logger.warning(f"🚨 BUY SIGNAL BLOCKED BY DAY TRADE RULES: {signal.symbol}")
+                                self.day_trades_blocked_today += 1
+                                continue  # Skip this signal
+                            
+                            best_account = max(enabled_accounts, key=lambda x: x.settled_funds)
+                            
+                            # Use regime-aware position sizing
+                            position_size = self.position_manager.get_position_size_for_signal(signal, best_account)
+                            if hasattr(self, 'regime_aware_sizer') and self.regime_aware_sizer:
+                                position_size = self.regime_aware_sizer.get_regime_adjusted_position_size(
+                                    signal, best_account, position_size
+                                )
+                            
+                            # Only proceed if we have a viable position size and sufficient cash
+                            if (position_size > 0 and 
+                                best_account.settled_funds >= position_size + config.get('min_cash_buffer_per_account', 15.0)):
+                                
+                                if self.execute_buy_order(signal, best_account, position_size):
+                                    trades_executed += 1
+                                    best_account.settled_funds -= position_size
+                                    
+                                    # Add small delay between orders
+                                    time.sleep(2)
+                            else:
+                                self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
+                else:
+                    self.logger.info("🔍 No signals found to process")
                     
                     if buy_signals and len(current_positions) < config['max_positions']:
                         enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
