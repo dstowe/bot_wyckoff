@@ -584,36 +584,79 @@ class EnhancedMultiTimeframeWyckoffAnalyzer:
         return 'POOR'
     
     def scan_market_enhanced(self, symbols: List[str], max_workers: int = 5) -> List[MultiTimeframeSignal]:
-        """Enhanced market scanning"""
-        try:
-            self.logger.info(f"🔍 Enhanced multi-timeframe scan of {len(symbols)} symbols...")
-            
-            enhanced_signals = []
-            
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_symbol = {
-                    executor.submit(self.analyze_symbol_multi_timeframe, symbol): symbol 
-                    for symbol in symbols
-                }
+            """Enhanced market scanning with detailed multi-timeframe logging"""
+            try:
+                self.logger.info(f"🔍 Enhanced multi-timeframe scan of {len(symbols)} symbols...")
                 
-                for future in as_completed(future_to_symbol):
-                    symbol = future_to_symbol[future]
-                    try:
-                        result = future.result()
-                        if result:
-                            enhanced_signals.append(result)
-                    except Exception:
-                        pass
-            
-            enhanced_signals.sort(key=lambda x: x.enhanced_strength, reverse=True)
-            
-            self.logger.info(f"🎯 Found {len(enhanced_signals)} enhanced signals")
-            for signal in enhanced_signals[:90]:
-                self.logger.info(f"   {signal.symbol}: {signal.signal_quality} - {signal.enhanced_strength:.2f}")
-            
-            return enhanced_signals
-        except Exception:
-            return []
+                enhanced_signals = []
+                quality_summary = {'EXCELLENT': 0, 'GOOD': 0, 'FAIR': 0, 'POOR': 0}
+                
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_symbol = {
+                        executor.submit(self.analyze_symbol_multi_timeframe, symbol): symbol 
+                        for symbol in symbols
+                    }
+                    
+                    for future in as_completed(future_to_symbol):
+                        symbol = future_to_symbol[future]
+                        try:
+                            result = future.result()
+                            if result:
+                                # Update quality summary
+                                quality_summary[result.signal_quality] += 1
+                                
+                                # DETAILED LOGGING FOR EACH SYMBOL - This is what you want to see!
+                                quality_icon = {
+                                    'EXCELLENT': '🌟',
+                                    'GOOD': '✅', 
+                                    'FAIR': '⚠️',
+                                    'POOR': '❌'
+                                }.get(result.signal_quality, '❓')
+                                
+                                self.logger.info(f"{quality_icon} {result.symbol}: {result.signal_quality} quality "
+                                            f"(Phases: {result.primary_phase}/"
+                                            f"{result.entry_timing_phase}/"
+                                            f"{result.precision_phase})")
+                                self.logger.info(f"   📈 Strengths: Daily={result.daily_strength:.2f} | "
+                                            f"4H={result.four_hour_strength:.2f} | "
+                                            f"1H={result.one_hour_strength:.2f}")
+                                self.logger.info(f"   🎪 Alignment: {result.timeframe_alignment:.2f} | "
+                                            f"Confirmation: {result.confirmation_score:.2f}")
+                                self.logger.info(f"   💪 Enhanced Strength: {result.enhanced_strength:.2f}")
+                                
+                                # Add to signals list regardless of quality for complete analysis
+                                enhanced_signals.append(result)
+                                
+                        except Exception as e:
+                            self.logger.debug(f"Error analyzing {symbol}: {e}")
+                            continue
+                
+                # Sort by enhanced strength
+                enhanced_signals.sort(key=lambda x: x.enhanced_strength, reverse=True)
+                
+                # Enhanced summary logging
+                self.logger.info(f"📈 Multi-Timeframe Quality Summary:")
+                self.logger.info(f"   🌟 EXCELLENT: {quality_summary['EXCELLENT']}")
+                self.logger.info(f"   ✅ GOOD: {quality_summary['GOOD']}")
+                self.logger.info(f"   ⚠️ FAIR: {quality_summary['FAIR']}")
+                self.logger.info(f"   ❌ POOR: {quality_summary['POOR']}")
+                
+                # Show top signals by quality
+                excellent_signals = [s for s in enhanced_signals if s.signal_quality == 'EXCELLENT']
+                good_signals = [s for s in enhanced_signals if s.signal_quality == 'GOOD']
+                
+                if excellent_signals:
+                    self.logger.info(f"🌟 EXCELLENT signals: {[s.symbol for s in excellent_signals[:10]]}")
+                if good_signals:
+                    self.logger.info(f"✅ GOOD signals: {[s.symbol for s in good_signals[:10]]}")
+                
+                self.logger.info(f"🎯 Total enhanced signals found: {len(enhanced_signals)}")
+                
+                return enhanced_signals
+                
+            except Exception as e:
+                self.logger.error(f"Error in enhanced market scanning: {e}")
+                return []
 
 
 # Helper functions

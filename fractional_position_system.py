@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 import time
 
+
 # Import existing systems
 from main import MainSystem
 from strategies.wyckoff.wyckoff import WyckoffPnFStrategy, WyckoffSignal
@@ -2542,229 +2543,204 @@ class EnhancedFractionalTradingBot:
         return False
     
     def run_enhanced_trading_cycle(self) -> Tuple[int, int, int, int, int]:
-        """ENHANCED: Trading cycle with day trade protection"""
-        trades_executed = 0
-        wyckoff_sells = 0
-        profit_scales = 0
-        emergency_exits = 0
-        day_trades_blocked = 0
-        
-        try:
-            # Reset daily counter
-            self.day_trades_blocked_today = 0
+            """ENHANCED: Trading cycle with day trade protection"""
+            trades_executed = 0
+            wyckoff_sells = 0
+            profit_scales = 0
+            emergency_exits = 0
+            day_trades_blocked = 0
             
-            # Step 1: Update configuration with conservative sizing
-            config = self.position_manager.update_config(self.main_system.account_manager)
-            
-            # Step 2: Get current positions
-            current_positions = self.get_current_positions()
-            
-            # Step 3: Run comprehensive exit analysis
-            self.logger.info("🔍 Running comprehensive exit analysis...")
-            exit_analysis = self.comprehensive_exit_manager.run_comprehensive_analysis(
-                self.main_system.wb, self.main_system.account_manager, current_positions
-            )
-            
-            # Step 4: Handle critical immediate actions FIRST
-            immediate_actions = exit_analysis['immediate_actions_required']
-            
-            for action in immediate_actions:
-                if action['urgency'] == 'CRITICAL':
-                    self.logger.warning(f"🚨 CRITICAL: {action['action']} for {action['symbol']} - {action['reason']}")
-                    
-                    if self.execute_emergency_exit(action, current_positions):
-                        emergency_exits += 1
-                        # Remove from current_positions to prevent further processing
-                        positions_to_remove = [k for k, v in current_positions.items() 
-                                             if v['symbol'] == action['symbol']]
-                        for k in positions_to_remove:
-                            del current_positions[k]
-            
-            # Step 5: Handle Wyckoff warning signals
-            wyckoff_warnings = exit_analysis['wyckoff_warnings']
-            
-            for symbol, warnings in wyckoff_warnings.items():
-                # Find positions for this symbol
-                symbol_positions = [v for v in current_positions.values() if v['symbol'] == symbol]
+            try:
+                # Reset daily counter
+                self.day_trades_blocked_today = 0
                 
-                for position in symbol_positions:
-                    for warning in warnings:
-                        if warning.urgency in ['HIGH', 'CRITICAL']:
-                            if self.execute_wyckoff_warning_exit(warning, position):
-                                wyckoff_sells += 1
-                                # Remove from current_positions
-                                position_key = f"{symbol}_{position['account_type']}"
-                                if position_key in current_positions:
-                                    del current_positions[position_key]
-                                break
-            
-            # Step 6: Enhanced profit scaling with day trade protection
-            dynamic_targets = exit_analysis['dynamic_profit_targets']
-            
-            for symbol, position in current_positions.items():
-                if position['symbol'] in dynamic_targets:
-                    scaling_opportunity = self.check_enhanced_profit_scaling(
-                        position['symbol'], position, dynamic_targets[position['symbol']]
-                    )
-                    
-                    if scaling_opportunity:
-                        if self.execute_enhanced_profit_scaling(scaling_opportunity):
-                            profit_scales += 1
-            
-            # Step 7: Emergency mode check
-            portfolio_risk = exit_analysis['portfolio_risk_assessment']
-            
-            if (portfolio_risk['portfolio_drawdown_pct'] > 0.12 or 
-                portfolio_risk['market_condition'] in ['MARKET_CRASH', 'HIGH_VOLATILITY']):
+                # Step 1: Update configuration with conservative sizing
+                config = self.position_manager.update_config(self.main_system.account_manager)
                 
-                self.emergency_mode = True
-                self.logger.warning("🚨 EMERGENCY MODE: Skipping new purchases")
+                # Step 2: Get current positions
+                current_positions = self.get_current_positions()
                 
-                # Log enhanced run data with day trade info
-                self.database.log_bot_run(
-                    signals_found=0,
-                    trades_executed=trades_executed,
-                    wyckoff_sells=wyckoff_sells,
-                    profit_scales=profit_scales,
-                    emergency_exits=emergency_exits,
-                    day_trades_blocked=self.day_trades_blocked_today,
-                    errors=0,
-                    portfolio_value=sum(acc.net_liquidation for acc in self.main_system.account_manager.get_enabled_accounts()),
-                    available_cash=sum(acc.settled_funds for acc in self.main_system.account_manager.get_enabled_accounts()),
-                    emergency_mode=True,
-                    market_condition=portfolio_risk['market_condition'],
-                    portfolio_drawdown_pct=portfolio_risk['portfolio_drawdown_pct'],
-                    status="EMERGENCY_MODE",
-                    log_details=f"Market: {portfolio_risk['market_condition']}, Drawdown: {portfolio_risk['portfolio_drawdown_pct']:.1%}, DayTrades Blocked: {self.day_trades_blocked_today}"
+                # Step 3: Run comprehensive exit analysis
+                self.logger.info("🔍 Running comprehensive exit analysis...")
+                exit_analysis = self.comprehensive_exit_manager.run_comprehensive_analysis(
+                    self.main_system.wb, self.main_system.account_manager, current_positions
                 )
                 
-                return trades_executed, wyckoff_sells, profit_scales, emergency_exits, self.day_trades_blocked_today
-            else:
-                self.emergency_mode = False
-            
-            # Step 8: Normal buy logic (only if NOT in emergency mode) WITH DAY TRADE PROTECTION
-            if not self.emergency_mode:
-                self.logger.info("🔍 Scanning for Wyckoff buy signals...")
+                # Step 4: Handle critical immediate actions FIRST
+                immediate_actions = exit_analysis['immediate_actions_required']
                 
-                # Use enhanced multi-timeframe scanning if available
-                if hasattr(self.wyckoff_strategy, 'use_enhanced_analysis') and self.wyckoff_strategy.use_enhanced_analysis:
-                    signals = self.wyckoff_strategy.scan_market_enhanced()
-                    self.logger.info("🎯 Using enhanced multi-timeframe signal scanning")
-                else:
-                    signals = self.wyckoff_strategy.scan_market()
-                    self.logger.info("📊 Using standard single-timeframe scanning")
-                
-                # FIXED: Move the signal processing logic OUTSIDE the if/else
-                if signals:
-                    buy_signals = [s for s in signals if (
-                        s.phase in self.buy_phases and 
-                        s.strength >= self.min_signal_strength and
-                        s.volume_confirmation
-                    )]
-                    
-                    if buy_signals and len(current_positions) < config['max_positions']:
-                        enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
+                for action in immediate_actions:
+                    if action['urgency'] == 'CRITICAL':
+                        self.logger.warning(f"🚨 CRITICAL: {action['action']} for {action['symbol']} - {action['reason']}")
                         
-                        # ENHANCEMENT: Apply signal quality filtering - Strategic Improvement 5 📈
-                        if SIGNAL_QUALITY_ENHANCEMENT and self.signal_quality_analyzer:
-                            try:
-                                enhanced_signals = []
-                                for signal in buy_signals:
-                                    enhanced_result = self.signal_quality_analyzer.analyze_symbol_multi_timeframe(signal.symbol)
-                                    
-                                    if enhanced_result and enhanced_result.signal_quality in ['GOOD', 'EXCELLENT']:
-                                        signal.strength = enhanced_result.enhanced_strength
-                                        signal.combined_score = enhanced_result.confirmation_score
-                                        enhanced_signals.append(signal)
-                                        
-                                        self.logger.info(f"🎯 {signal.symbol}: {enhanced_result.signal_quality} quality "
-                                                    f"(Phases: {enhanced_result.primary_phase}/"
-                                                    f"{enhanced_result.entry_timing_phase}/"
-                                                    f"{enhanced_result.precision_phase})")
-                                
-                                if enhanced_signals:
-                                    self.logger.info(f"📈 Quality Enhancement: {len(enhanced_signals)}/{len(buy_signals)} signals passed")
-                                    buy_signals = enhanced_signals
-                                else:
-                                    self.logger.info(f"⚠️ Quality Enhancement: No signals met criteria")
-                                    buy_signals = []
-                                    
-                            except Exception as e:
-                                self.logger.warning(f"⚠️ Signal quality enhancement failed: {e}")
+                        if self.execute_emergency_exit(action, current_positions):
+                            emergency_exits += 1
+                            # Remove from current_positions to prevent further processing
+                            positions_to_remove = [k for k, v in current_positions.items() 
+                                                if v['symbol'] == action['symbol']]
+                            for k in positions_to_remove:
+                                del current_positions[k]
+                
+                # Step 5: Handle Wyckoff warning signals
+                wyckoff_warnings = exit_analysis['wyckoff_warnings']
+                
+                for symbol, warnings in wyckoff_warnings.items():
+                    # Find positions for this symbol
+                    symbol_positions = [v for v in current_positions.values() if v['symbol'] == symbol]
+                    
+                    for position in symbol_positions:
+                        for warning in warnings:
+                            if warning.urgency in ['HIGH', 'CRITICAL']:
+                                if self.execute_wyckoff_warning_exit(warning, position):
+                                    wyckoff_sells += 1
+                                    # Remove from current_positions
+                                    position_key = f"{symbol}_{position['account_type']}"
+                                    if position_key in current_positions:
+                                        del current_positions[position_key]
+                                    break
+                
+                # Step 6: Enhanced profit scaling with day trade protection
+                dynamic_targets = exit_analysis['dynamic_profit_targets']
+                
+                for symbol, position in current_positions.items():
+                    if position['symbol'] in dynamic_targets:
+                        scaling_opportunity = self.check_enhanced_profit_scaling(
+                            position['symbol'], position, dynamic_targets[position['symbol']]
+                        )
+                        
+                        if scaling_opportunity:
+                            if self.execute_enhanced_profit_scaling(scaling_opportunity):
+                                profit_scales += 1
+                
+                # Step 7: Emergency mode check
+                portfolio_risk = exit_analysis['portfolio_risk_assessment']
+                
+                if (portfolio_risk['portfolio_drawdown_pct'] > 0.12 or 
+                    portfolio_risk['market_condition'] in ['MARKET_CRASH', 'HIGH_VOLATILITY']):
+                    
+                    self.emergency_mode = True
+                    self.logger.warning("🚨 EMERGENCY MODE: Skipping new purchases")
+                    
+                    # Log enhanced run data with day trade info
+                    self.database.log_bot_run(
+                        signals_found=0,
+                        trades_executed=trades_executed,
+                        wyckoff_sells=wyckoff_sells,
+                        profit_scales=profit_scales,
+                        emergency_exits=emergency_exits,
+                        day_trades_blocked=self.day_trades_blocked_today,
+                        errors=0,
+                        portfolio_value=sum(acc.net_liquidation for acc in self.main_system.account_manager.get_enabled_accounts()),
+                        available_cash=sum(acc.settled_funds for acc in self.main_system.account_manager.get_enabled_accounts()),
+                        emergency_mode=True,
+                        market_condition=portfolio_risk['market_condition'],
+                        portfolio_drawdown_pct=portfolio_risk['portfolio_drawdown_pct'],
+                        status="EMERGENCY_MODE",
+                        log_details=f"Market: {portfolio_risk['market_condition']}, Drawdown: {portfolio_risk['portfolio_drawdown_pct']:.1%}, DayTrades Blocked: {self.day_trades_blocked_today}"
+                    )
+                    
+                    return trades_executed, wyckoff_sells, profit_scales, emergency_exits, self.day_trades_blocked_today
+                else:
+                    self.emergency_mode = False
+                
+                # Step 8: Normal buy logic (only if NOT in emergency mode) WITH DAY TRADE PROTECTION
+                if not self.emergency_mode:
+                    self.logger.info("🔍 Scanning for Wyckoff buy signals...")
+                    
+                    # Use enhanced multi-timeframe scanning if available
+                    if hasattr(self.wyckoff_strategy, 'use_enhanced_analysis') and self.wyckoff_strategy.use_enhanced_analysis:
+                        signals = self.wyckoff_strategy.scan_market_enhanced()
+                        self.logger.info("🎯 Using enhanced multi-timeframe signal scanning")
+                    else:
+                        signals = self.wyckoff_strategy.scan_market()
+                        self.logger.info("📊 Using standard single-timeframe scanning")
+                    
+                    # Process signals if found
+                    if signals:
+                        buy_signals = [s for s in signals if (
+                            s.phase in self.buy_phases and 
+                            s.strength >= self.min_signal_strength and
+                            s.volume_confirmation
+                        )]
+                        
+                        self.logger.info(f"📊 Initial screening: {len(buy_signals)}/{len(signals)} signals passed basic criteria")
+                        
+                        if buy_signals and len(current_positions) < config['max_positions']:
+                            enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
+                            
+                            # ENHANCEMENT: Apply signal quality filtering - Strategic Improvement 5 📈
+                            if signals:
+                                                buy_signals = [s for s in signals if (
+                                                    s.phase in self.buy_phases and 
+                                                    s.strength >= self.min_signal_strength and
+                                                    s.volume_confirmation
+                                                )]
+                                                
+                                                self.logger.info(f"📊 Initial screening: {len(buy_signals)}/{len(signals)} signals passed basic criteria")
+                                                
+                                                if buy_signals and len(current_positions) < config['max_positions']:
+                                                    enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
+                                                    
+                                                    # The signals from scan_market_enhanced() are already enhanced with multi-timeframe analysis
+                                                    # No need to re-analyze them here - just use the enhanced signals directly
+                                                    
+                                                    if buy_signals:
+                                                        self.logger.info(f"🎯 Processing {len(buy_signals)} enhanced signals from Wyckoff strategy")
+                                                        enhanced_count = sum(1 for s in buy_signals if hasattr(s, 'combined_score'))
+                                                        if enhanced_count > 0:
+                                                            self.logger.info(f"✨ {enhanced_count}/{len(buy_signals)} signals have enhanced multi-timeframe data")
 
-                        # Process buy signals WITH DAY TRADE CHECKING
-                        for signal in buy_signals[:max(1, config['max_positions'] - len(current_positions))]:
-                            
-                            # STEP 1: Check day trade compliance BEFORE calculating position size
-                            day_trade_check = self._check_day_trade_compliance(signal.symbol, 'BUY')
-                            
-                            if day_trade_check.recommendation == 'BLOCK':
-                                self.logger.warning(f"🚨 BUY SIGNAL BLOCKED BY DAY TRADE RULES: {signal.symbol}")
-                                self.day_trades_blocked_today += 1
-                                continue  # Skip this signal
-                            
-                            best_account = max(enabled_accounts, key=lambda x: x.settled_funds)
-                            
-                            # Use regime-aware position sizing
-                            position_size = self.position_manager.get_position_size_for_signal(signal, best_account)
-                            if hasattr(self, 'regime_aware_sizer') and self.regime_aware_sizer:
-                                position_size = self.regime_aware_sizer.get_regime_adjusted_position_size(
-                                    signal, best_account, position_size
-                                )
-                            
-                            # Only proceed if we have a viable position size and sufficient cash
-                            if (position_size > 0 and 
-                                best_account.settled_funds >= position_size + config.get('min_cash_buffer_per_account', 15.0)):
+
+                            # Process buy signals WITH DAY TRADE CHECKING
+                            for signal in buy_signals[:max(1, config['max_positions'] - len(current_positions))]:
                                 
-                                if self.execute_buy_order(signal, best_account, position_size):
-                                    trades_executed += 1
-                                    best_account.settled_funds -= position_size
-                                    
-                                    # Add small delay between orders
-                                    time.sleep(2)
-                            else:
-                                self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
-                else:
-                    self.logger.info("🔍 No signals found to process")
-                    
-                    if buy_signals and len(current_positions) < config['max_positions']:
-                        enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
-                        
-                        # FIXED: Conservative approach to signal selection WITH DAY TRADE CHECKING
-                        for signal in buy_signals[:max(1, config['max_positions'] - len(current_positions))]:
-                            
-                            # STEP 1: Check day trade compliance BEFORE calculating position size
-                            day_trade_check = self._check_day_trade_compliance(signal.symbol, 'BUY')
-                            
-                            if day_trade_check.recommendation == 'BLOCK':
-                                self.logger.warning(f"🚨 BUY SIGNAL BLOCKED BY DAY TRADE RULES: {signal.symbol}")
-                                self.day_trades_blocked_today += 1
-                                continue  # Skip this signal
-                            
-                            best_account = max(enabled_accounts, key=lambda x: x.settled_funds)
-                            
-                            # FIXED: Use the new conservative position sizing
-                            position_size = self.position_manager.get_position_size_for_signal(signal, best_account)
-                            
-                            # Only proceed if we have a viable position size and sufficient cash
-                            if (position_size > 0 and 
-                                best_account.settled_funds >= position_size + config.get('min_cash_buffer_per_account', 15.0)):
+                                # STEP 1: Check day trade compliance BEFORE calculating position size
+                                day_trade_check = self._check_day_trade_compliance(signal.symbol, 'BUY')
                                 
-                                if self.execute_buy_order(signal, best_account, position_size):
-                                    trades_executed += 1
-                                    best_account.settled_funds -= position_size
+                                if day_trade_check.recommendation == 'BLOCK':
+                                    self.logger.warning(f"🚨 BUY SIGNAL BLOCKED BY DAY TRADE RULES: {signal.symbol}")
+                                    self.day_trades_blocked_today += 1
+                                    continue  # Skip this signal
+                                
+                                best_account = max(enabled_accounts, key=lambda x: x.settled_funds)
+                                
+                                # Use regime-aware position sizing if available
+                                position_size = self.position_manager.get_position_size_for_signal(signal, best_account)
+                                if hasattr(self, 'regime_aware_sizer') and self.regime_aware_sizer:
+                                    position_size = self.regime_aware_sizer.get_regime_adjusted_position_size(
+                                        signal, best_account, position_size
+                                    )
+                                
+                                # Only proceed if we have a viable position size and sufficient cash
+                                if (position_size > 0 and 
+                                    best_account.settled_funds >= position_size + config.get('min_cash_buffer_per_account', 15.0)):
                                     
-                                    # Add small delay between orders
-                                    time.sleep(2)
-                            else:
-                                self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
-            
-            day_trades_blocked = self.day_trades_blocked_today
-            return trades_executed, wyckoff_sells, profit_scales, emergency_exits, day_trades_blocked
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error in enhanced trading cycle: {e}")
-            return trades_executed, wyckoff_sells, profit_scales, emergency_exits, self.day_trades_blocked_today
+                                    # Enhanced logging for signal execution
+                                    if hasattr(signal, 'combined_score'):
+                                        self.logger.info(f"💰 Executing enhanced signal: {signal.symbol}")
+                                        self.logger.info(f"   🎯 Quality score: {signal.combined_score:.2f}")
+                                        self.logger.info(f"   💪 Enhanced strength: {signal.strength:.2f}")
+                                    else:
+                                        self.logger.info(f"💰 Executing standard signal: {signal.symbol}")
+                                        self.logger.info(f"   💪 Signal strength: {signal.strength:.2f}")
+                                    
+                                    # if self.execute_buy_order(signal, best_account, position_size):
+                                    #     trades_executed += 1
+                                    #     best_account.settled_funds -= position_size
+                                        
+                                    #     # Add small delay between orders
+                                    #     time.sleep(2)
+                                else:
+                                    self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
+                    else:
+                        self.logger.info("🔍 No signals found to process")
+                
+                day_trades_blocked = self.day_trades_blocked_today
+                return trades_executed, wyckoff_sells, profit_scales, emergency_exits, day_trades_blocked
+                
+            except Exception as e:
+                self.logger.error(f"❌ Error in enhanced trading cycle: {e}")
+                return trades_executed, wyckoff_sells, profit_scales, emergency_exits, self.day_trades_blocked_today
     
     def run(self) -> bool:
         """Main execution with enhanced day trade protection"""
