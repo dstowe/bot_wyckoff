@@ -3362,12 +3362,12 @@ class EnhancedFractionalTradingBot:
                                     self.logger.info(f"💰 Executing signal: {signal.symbol} (strength: {signal.strength:.2f})")
 
                                     # TEMPORARILY BLOCK BUY UNCOMMENT TO ENABLE TRADE EXECUTION
-                                    # if self.execute_buy_order(signal, best_account, position_size):
-                                    #     trades_executed += 1
-                                    #     best_account.settled_funds -= position_size
+                                    if self.execute_buy_order(signal, best_account, position_size):
+                                        trades_executed += 1
+                                        best_account.settled_funds -= position_size
                                         
-                                    #     # Add small delay between orders
-                                    #     time.sleep(2)
+                                        # Add small delay between orders
+                                        time.sleep(2)
                                 else:
                                     self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
                     else:
