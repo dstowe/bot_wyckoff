@@ -84,12 +84,14 @@ class RealAccountDayTradeChecker:
             today_str = today.strftime('%Y-%m-%d')  # 2025-08-19
             today_webull = today.strftime('%m/%d/%Y')  # 08/19/2025
             
-            self.logger.debug(f"Looking for orders from {today_str} (Webull format: {today_webull})")
+            # IMPROVED LOGGING - Include symbol in debug message
+            symbol_text = symbol if symbol else "ALL"
+            self.logger.debug(f"Looking for {symbol_text} orders from {today_str} (Webull format: {today_webull})")
             
             combo_orders = wb_client.get_history_orders(count=100)
             
             if not combo_orders:
-                self.logger.debug("No combo orders returned from API")
+                self.logger.debug(f"No combo orders returned from API for {symbol_text}")
                 return []
             
             today_trades = []
@@ -118,11 +120,12 @@ class RealAccountDayTradeChecker:
                     self.logger.debug(f"Error processing combo order: {e}")
                     continue
             
-            self.logger.info(f"📊 Found {len(today_trades)} today's trades via API")
+            # IMPROVED LOGGING - Include symbol and more detail
+            self.logger.info(f"📊 Found {len(today_trades)} today's trades via API for {symbol_text}")
             return today_trades
             
         except Exception as e:
-            self.logger.error(f"Error getting actual trades: {e}")
+            self.logger.error(f"Error getting actual trades for {symbol or 'ALL'}: {e}")
             return []
 
     def _is_order_from_today(self, individual_order, today_webull, today_iso):
@@ -2891,12 +2894,12 @@ class EnhancedFractionalTradingBot:
                                         self.logger.info(f"💰 Executing signal: {signal.symbol} (strength: {signal.strength:.2f})")
 
                                         # TEMPORARILY BLOCK BUY UNCOMMENT TO ENABLE TRADE EXECUTION
-                                        # if self.execute_buy_order(signal, best_account, position_size):
-                                        #     trades_executed += 1
-                                        #     best_account.settled_funds -= position_size
+                                        if self.execute_buy_order(signal, best_account, position_size):
+                                            trades_executed += 1
+                                            best_account.settled_funds -= position_size
                                             
-                                        #     # Add small delay between orders
-                                        #     time_module.sleep(2)
+                                            # Add small delay between orders
+                                            time_module.sleep(2)
                                     else:
                                         self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
                     else:
