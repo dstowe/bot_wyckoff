@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
-import time
+import time as time_module
 
 
 # Import existing systems
@@ -2403,14 +2403,14 @@ class EnhancedFractionalTradingBot:
                     if order_result.get('success', False):
                         orders_executed += 1
                         total_shares_sold += 1.0
-                        time.sleep(0.5)  # Brief delay
+                        time_module.sleep(0.5)  # Brief delay
                     else:
                         self.logger.critical(f"   ❌ Emergency whole share order {i+1} failed")
                         break
                 
                 # Execute fractional remainder
                 if fractional_remainder > 0.001:
-                    time.sleep(0.5)
+                    time_module.sleep(0.5)
                     fractional_result = self.main_system.wb.place_order(
                         stock=symbol,
                         price=0,
@@ -2534,14 +2534,14 @@ class EnhancedFractionalTradingBot:
                     if order_result.get('success', False):
                         orders_executed += 1
                         total_shares_sold += 1.0
-                        time.sleep(0.5)  # Brief delay
+                        time_module.sleep(0.5)  # Brief delay
                     else:
                         self.logger.warning(f"   ❌ Wyckoff whole share order {i+1} failed")
                         break
                 
                 # Execute fractional remainder
                 if fractional_remainder > 0.001:
-                    time.sleep(0.5)
+                    time_module.sleep(0.5)
                     fractional_result = self.main_system.wb.place_order(
                         stock=warning.symbol,
                         price=0,
@@ -2735,7 +2735,7 @@ class EnhancedFractionalTradingBot:
                         orders_executed += 1
                         total_shares_sold += 1.0
                         self.logger.info(f"   ✅ Whole share order {i+1}/{whole_shares} executed")
-                        time.sleep(1)  # Brief delay between orders
+                        time_module.sleep(1)  # Brief delay between orders
                     else:
                         error_msg = order_result.get('msg', 'Unknown error')
                         self.logger.warning(f"   ❌ Whole share order {i+1} failed: {error_msg}")
@@ -2743,7 +2743,7 @@ class EnhancedFractionalTradingBot:
                 
                 # Execute fractional remainder if any
                 if fractional_remainder > 0.001 and orders_executed > 0:  # Only if we have meaningful fractional amount
-                    time.sleep(1)  # Brief delay
+                    time_module.sleep(1)  # Brief delay
                     fractional_result = self.main_system.wb.place_order(
                         stock=symbol,
                         price=0,
@@ -3309,7 +3309,7 @@ class EnhancedFractionalTradingBot:
                                 positions_added += 1
                             
                             import time
-                            time.sleep(1)
+                            time_module.sleep(1)
                     else:
                         self.logger.info("📊 No reaccumulation opportunities found")
                 
@@ -3335,41 +3335,47 @@ class EnhancedFractionalTradingBot:
                             
                             self.logger.info(f"📊 Initial screening: {len(buy_signals)}/{len(signals)} signals passed basic criteria")
                             
+                            # FIXED: Move enabled_accounts definition outside conditional block
+
+                            
+                            enabled_accounts = self.main_system.account_manager.get_enabled_accounts()
+
+                            
+                            
+
+                            
                             if buy_signals and len(current_positions) < config['max_positions']:
-                                enabled_accounts = self.main_system.account_manager.get_enabled_accounts()                              
-                               
-
-                            # Process buy signals WITH DAY TRADE CHECKING
-                            for signal in buy_signals[:max(1, config['max_positions'] - len(current_positions))]:
-                                
-                                # STEP 1: Check day trade compliance BEFORE calculating position size
-                                day_trade_check = self._check_day_trade_compliance(signal.symbol, 'BUY')
-                                
-                                if day_trade_check.recommendation == 'BLOCK':
-                                    self.logger.warning(f"🚨 BUY SIGNAL BLOCKED BY DAY TRADE RULES: {signal.symbol}")
-                                    self.day_trades_blocked_today += 1
-                                    continue  # Skip this signal
-                                
-                                best_account = max(enabled_accounts, key=lambda x: x.settled_funds)
-                                
-                                position_size = self.position_manager.get_position_size_for_signal(signal, best_account)
-
-                                
-                                # Only proceed if we have a viable position size and sufficient cash
-                                if (position_size > 0 and 
-                                    best_account.settled_funds >= position_size + config.get('min_cash_buffer_per_account', 15.0)):
+                                # Process buy signals WITH DAY TRADE CHECKING
+                                for signal in buy_signals[:max(1, config['max_positions'] - len(current_positions))]:
                                     
-                                    self.logger.info(f"💰 Executing signal: {signal.symbol} (strength: {signal.strength:.2f})")
+                                    # STEP 1: Check day trade compliance BEFORE calculating position size
+                                    day_trade_check = self._check_day_trade_compliance(signal.symbol, 'BUY')
+                                    
+                                    if day_trade_check.recommendation == 'BLOCK':
+                                        self.logger.warning(f"🚨 BUY SIGNAL BLOCKED BY DAY TRADE RULES: {signal.symbol}")
+                                        self.day_trades_blocked_today += 1
+                                        continue  # Skip this signal
+                                    
+                                    best_account = max(enabled_accounts, key=lambda x: x.settled_funds)
+                                    
+                                    position_size = self.position_manager.get_position_size_for_signal(signal, best_account)
 
-                                    # TEMPORARILY BLOCK BUY UNCOMMENT TO ENABLE TRADE EXECUTION
-                                    if self.execute_buy_order(signal, best_account, position_size):
-                                        trades_executed += 1
-                                        best_account.settled_funds -= position_size
+                                    
+                                    # Only proceed if we have a viable position size and sufficient cash
+                                    if (position_size > 0 and 
+                                        best_account.settled_funds >= position_size + config.get('min_cash_buffer_per_account', 15.0)):
                                         
-                                        # Add small delay between orders
-                                        time.sleep(2)
-                                else:
-                                    self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
+                                        self.logger.info(f"💰 Executing signal: {signal.symbol} (strength: {signal.strength:.2f})")
+
+                                        # TEMPORARILY BLOCK BUY UNCOMMENT TO ENABLE TRADE EXECUTION
+                                        if self.execute_buy_order(signal, best_account, position_size):
+                                            trades_executed += 1
+                                            best_account.settled_funds -= position_size
+                                            
+                                            # Add small delay between orders
+                                            time_module.sleep(2)
+                                    else:
+                                        self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
                     else:
                         self.logger.info("🔍 No signals found to process")
                 
@@ -3672,10 +3678,10 @@ def main():
     success = bot.run()
     
     if success:
-        print("✅ Enhanced fractional trading bot with day trade protection completed!")
+        print("✅ Trading bot with day trade protection successfully completedy!")
         sys.exit(0)
     else:
-        print("❌ Enhanced fractional trading bot with day trade protection failed!")
+        print("❌ Trading bot with day trade protection failed!")
         sys.exit(1)
 
 

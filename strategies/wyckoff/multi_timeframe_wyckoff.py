@@ -641,20 +641,16 @@ class EnhancedMultiTimeframeWyckoffAnalyzer:
                 self.logger.info(f"   ⚠️ FAIR: {quality_summary['FAIR']}")
                 self.logger.info(f"   ❌ POOR: {quality_summary['POOR']}")
                 
-                # Show top signals by quality
-                excellent_signals = [s for s in enhanced_signals if s.signal_quality == 'EXCELLENT']
-                good_signals = [s for s in enhanced_signals if s.signal_quality == 'GOOD']
+                # # Show top signals by quality
+                # excellent_signals = [s for s in enhanced_signals if s.signal_quality == 'EXCELLENT']
+                # good_signals = [s for s in enhanced_signals if s.signal_quality == 'GOOD']
                 
-                if excellent_signals:
-                    excellent_symbols = [s.symbol for s in excellent_signals]
-                    self.logger.info(f"🌟 ALL {len(excellent_signals)} EXCELLENT signals: {excellent_symbols}")
-                    
-                if good_signals:
-                    good_symbols = [s.symbol for s in good_signals]  
-                    self.logger.info(f"✅ ALL {len(good_signals)} GOOD signals: {good_symbols}")
-
+                # if excellent_signals:
+                #     self.logger.info(f"🌟 EXCELLENT signals: {[s.symbol for s in excellent_signals[:10]]}")
+                # if good_signals:
+                #     self.logger.info(f"✅ GOOD signals: {[s.symbol for s in good_signals[:10]]}")
                 
-                self.logger.info(f"🎯 Total enhanced signals found: {len(enhanced_signals)}")
+                # self.logger.info(f"🎯 Total enhanced signals found: {len(enhanced_signals)}")
                 
                 return enhanced_signals
                 
