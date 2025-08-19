@@ -30,7 +30,7 @@ class PersonalTradingConfig:
             'enabled': True,
             'day_trading_enabled': True,
             'options_enabled': True,
-            'max_position_size': 0.30,  # 25% of account
+            'max_position_size': 0.25,  # 25% of account
             'min_trade_amount': 6.00,
             'max_trade_amount': 10000,
             'pdt_protection': False
@@ -39,7 +39,7 @@ class PersonalTradingConfig:
             'enabled': True,
             'day_trading_enabled': True,
             'options_enabled': True,
-            'max_position_size': 0.30,  # 20% of account
+            'max_position_size': 0.25,  # 20% of account
             'min_trade_amount': 6.00,
             'max_trade_amount': 15000,
             'pdt_protection': True,

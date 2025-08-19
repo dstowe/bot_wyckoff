@@ -349,7 +349,8 @@ class WyckoffPnFStrategy:
             'Energy': ['XOM', 'CVX', 'COP', 'EOG', 'SLB', 'PSX', 'VLO', 'MPC', 'OXY', 'HAL'],
             'Industrials': ['BA', 'CAT', 'GE', 'MMM', 'HON', 'UPS', 'RTX', 'LMT', 'DE', 'FDX'],
             'Materials': ['LIN', 'APD', 'SHW', 'FCX', 'NEM', 'DOW', 'DD', 'PPG', 'ECL', 'IFF'],
-            'Utilities': ['NEE', 'DUK', 'SO', 'D', 'EXC', 'XEL', 'SRE', 'AEP', 'ES', 'AWK']
+            'Utilities': ['NEE', 'DUK', 'SO', 'D', 'EXC', 'XEL', 'SRE', 'AEP', 'ES', 'AWK'],
+            'Small_Caps': ['SNOW', 'PLTR', 'NET', 'DDOG','EXAS', 'VEEV', 'TDOC','ENPH', 'SEDG', 'CHPT','CRWD', 'ZS', 'OKTA','SQ', 'AFRM'],
         }
         for sector, stocks in sector_map.items():
             if symbol in stocks: return sector
