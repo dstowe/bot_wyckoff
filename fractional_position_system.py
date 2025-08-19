@@ -2189,8 +2189,8 @@ class EnhancedFractionalTradingBot:
             return False
   
         
-    def execute_buy_order(self, signal: WyckoffSignal, account, position_size: float) -> bool:
-        """ENHANCED: Execute buy order with DAY TRADE PROTECTION and strict cash validation"""
+    def execute_buy_order(self, signal: WyckoffSignal, account, position_size: float, retry_attempt: bool = False) -> bool:
+        """ENHANCED: Execute buy order with DAY TRADE PROTECTION and session retry"""
         try:
             # STEP 1: DAY TRADE COMPLIANCE CHECK
             day_trade_check = self._check_day_trade_compliance(signal.symbol, 'BUY')
@@ -2253,7 +2253,8 @@ class EnhancedFractionalTradingBot:
                 return False
             
             # STEP 4: Execute the order
-            self.logger.info(f"💰 Buying {shares_to_buy:.5f} shares of {signal.symbol}")
+            retry_text = " (RETRY)" if retry_attempt else ""
+            self.logger.info(f"💰 Buying {shares_to_buy:.5f} shares of {signal.symbol}{retry_text}")
             self.logger.info(f"   Price: ${current_price:.2f}, Cost: ${actual_cost:.2f}")
             self.logger.info(f"   Cash before: ${available_cash:.2f}, Will remain: ${available_cash - actual_cost:.2f}")
             self.logger.info(f"   Day Trade Check: {day_trade_check.recommendation}")
@@ -2303,21 +2304,35 @@ class EnhancedFractionalTradingBot:
                 # Update account cash tracking
                 account.settled_funds -= actual_cost
                 
-                self.logger.info(f"✅ Buy order executed: {signal.symbol} - Order ID: {order_id}")
+                success_text = " (RETRY SUCCESS)" if retry_attempt else ""
+                self.logger.info(f"✅ Buy order executed: {signal.symbol} - Order ID: {order_id}{success_text}")
                 return True
             else:
                 error_msg = order_result.get('msg', 'Unknown error')
                 self.logger.error(f"❌ Buy order failed for {signal.symbol}: {error_msg}")
                 
-                # Check if it's a session issue
-                if 'session' in error_msg.lower() or 'expired' in error_msg.lower():
-                    self.logger.warning("⚠️ Session issue detected. . Logging in again.")
-                    # Clear session to force fresh login next time
+                # NEW: Check if it's a session issue and we haven't already retried
+                if not retry_attempt and ('session' in error_msg.lower() or 'expired' in error_msg.lower()):
+                    self.logger.warning("⚠️ Session issue detected, attempting to re-login and retry...")
+                    
+                    # Clear session to force fresh login
                     self.main_system.session_manager.clear_session()
-
-                    self.main_system.login_manager.login_automatically()
-                    # Save the refreshed session
-                    self.main_system.session_manager.save_session(self.main_system.wb)
+                    
+                    # Attempt fresh login
+                    if self.main_system.login_manager.login_automatically():
+                        self.logger.info("✅ Re-login successful, retrying trade...")
+                        # Save the refreshed session
+                        self.main_system.session_manager.save_session(self.main_system.wb)
+                        
+                        # RETRY THE TRADE - this is the key fix!
+                        return self.execute_buy_order(signal, account, position_size, retry_attempt=True)
+                    else:
+                        self.logger.error("❌ Re-login failed, cannot retry trade")
+                        return False
+                elif retry_attempt:
+                    self.logger.error(f"❌ Retry also failed for {signal.symbol}, giving up")
+                    return False
+                
                 return False
                 
         except Exception as e:
