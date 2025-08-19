@@ -1460,10 +1460,10 @@ class DynamicAccountManager:
         
         # FIXED: More conservative profit targets
         profit_targets = [
-            {'gain_pct': 0.02, 'sell_pct': 0.15, 'description': '6% gain: Take 15% profit'},
-            {'gain_pct': 0.06, 'sell_pct': 0.20, 'description': '12% gain: Take 20% more'},
-            {'gain_pct': 0.12, 'sell_pct': 0.25, 'description': '20% gain: Take 25% more'},
-            {'gain_pct': 0.20, 'sell_pct': 0.40, 'description': '30% gain: Take final 40%'}
+            {'gain_pct': 0.06, 'sell_pct': 0.15, 'description': '6% gain: Take 15% profit'},
+            {'gain_pct': 0.12, 'sell_pct': 0.20, 'description': '12% gain: Take 20% more'},
+            {'gain_pct': 0.20, 'sell_pct': 0.25, 'description': '20% gain: Take 25% more'},
+            {'gain_pct': 0.30, 'sell_pct': 0.40, 'description': '30% gain: Take final 40%'}
         ]
         
         return {
@@ -1501,8 +1501,8 @@ class DynamicAccountManager:
                 'Creek': {'initial_allocation': 0.0, 'allow_additions': False, 'max_total_allocation': 0.0}
             },
             'profit_targets': [
-                {'gain_pct': 0.02, 'sell_pct': 0.15, 'description': '6% gain: Take 15% profit'},
-                {'gain_pct': 0.06, 'sell_pct': 0.20, 'description': '12% gain: Take 20% more'},
+                {'gain_pct': 0.06, 'sell_pct': 0.15, 'description': '6% gain: Take 15% profit'},
+                {'gain_pct': 0.12, 'sell_pct': 0.20, 'description': '12% gain: Take 20% more'},
                 {'gain_pct': 0.20, 'sell_pct': 0.25, 'description': '20% gain: Take 25% more'}
             ],
             'calculated_at': datetime.now().isoformat(),
@@ -2098,6 +2098,11 @@ class EnhancedFractionalTradingBot:
             
             self.main_system = MainSystem()
             self.wyckoff_strategy = WyckoffPnFStrategy()
+
+            # ADD THIS: Update database during initialization
+            self.logger.info("📊 Updating stock database...")
+            self.wyckoff_strategy.update_database()
+            self.logger.info("✅ Database update completed")
 
             self.database = EnhancedTradingDatabase()
             

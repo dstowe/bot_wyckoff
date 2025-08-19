@@ -336,7 +336,8 @@ class WyckoffPnFStrategy:
                 'XOM', 'CVX', 'COP', 'EOG', 'SLB', 'PSX', 'VLO', 'MPC', 'OXY', 'HAL',
                 'BA', 'CAT', 'GE', 'MMM', 'HON', 'UPS', 'RTX', 'LMT', 'DE', 'FDX',
                 'LIN', 'APD', 'SHW', 'FCX', 'NEM', 'DOW', 'DD', 'PPG', 'ECL', 'IFF',
-                'NEE', 'DUK', 'SO', 'D', 'EXC', 'XEL', 'SRE', 'AEP', 'ES', 'AWK']
+                'NEE', 'DUK', 'SO', 'D', 'EXC', 'XEL', 'SRE', 'AEP', 'ES', 'AWK','SNOW', 'PLTR',
+                'NET', 'DDOG','EXAS', 'VEEV', 'TDOC','ENPH', 'SEDG', 'CHPT','CRWD', 'ZS', 'OKTA','XYZ', 'AFRM']
 
     def map_symbol_to_sector(self, symbol: str) -> str:
         # This is a simplified mapping for demonstration.
@@ -350,7 +351,7 @@ class WyckoffPnFStrategy:
             'Industrials': ['BA', 'CAT', 'GE', 'MMM', 'HON', 'UPS', 'RTX', 'LMT', 'DE', 'FDX'],
             'Materials': ['LIN', 'APD', 'SHW', 'FCX', 'NEM', 'DOW', 'DD', 'PPG', 'ECL', 'IFF'],
             'Utilities': ['NEE', 'DUK', 'SO', 'D', 'EXC', 'XEL', 'SRE', 'AEP', 'ES', 'AWK'],
-            'Small_Caps': ['SNOW', 'PLTR', 'NET', 'DDOG','EXAS', 'VEEV', 'TDOC','ENPH', 'SEDG', 'CHPT','CRWD', 'ZS', 'OKTA','SQ', 'AFRM'],
+            'Small_Caps': ['SNOW', 'PLTR', 'NET', 'DDOG','EXAS', 'VEEV', 'TDOC','ENPH', 'SEDG', 'CHPT','CRWD', 'ZS', 'OKTA','XYZ', 'AFRM'],
         }
         for sector, stocks in sector_map.items():
             if symbol in stocks: return sector
