@@ -8,7 +8,7 @@ This version checks ACTUAL Webull account trades, not just database records
 import sys
 import logging
 import traceback
-import sqlite3
+import sqlite3  # ✅ FIXED: Added missing sqlite3 import
 import json
 import yfinance as yf
 import pandas as pd
@@ -16,18 +16,17 @@ import numpy as np
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass  # ✅ FIXED: Added missing dataclass import
 import time as time_module
-
 
 # Import existing systems
 from main import MainSystem
 
-# ENHANCEMENT: Wyckoff Reaccumulation Position Addition
-import yfinance as yf
+# ✅ FIXED: Import from database package (extracted classes)
+from database import EnhancedTradingDatabase, WyckoffSignal, DayTradeCheckResult
 
-
-from strategies.wyckoff.wyckoff import WyckoffPnFStrategy, WyckoffSignal
+# Import strategies and config
+from strategies.wyckoff.wyckoff import WyckoffPnFStrategy
 from config.config import PersonalTradingConfig
 
 @dataclass
@@ -69,17 +68,6 @@ class ReaccumulationSignal:
     timeframe_confluence: int  # Number of timeframes confirming
     risk_level: str  # 'LOW', 'MEDIUM', 'HIGH'
 
-@dataclass
-class DayTradeCheckResult:
-    """Day trade compliance check result"""
-    symbol: str
-    action: str
-    would_be_day_trade: bool
-    db_trades_today: List[Dict]
-    actual_trades_today: List[Dict]
-    manual_trades_detected: bool
-    recommendation: str  # 'ALLOW', 'BLOCK', 'EMERGENCY_OVERRIDE'
-    details: str
 
 class RealAccountDayTradeChecker:
     """FIXED: Real account day trade checking using Webull API"""
@@ -90,124 +78,169 @@ class RealAccountDayTradeChecker:
         self.last_cache_update = None
     
     def get_actual_todays_trades(self, wb_client, symbol: str = None) -> List[Dict]:
-        """FIXED: Get TODAY'S trades from actual Webull account with correct API methods"""
-        today = datetime.now().strftime('%Y-%m-%d')
-        cache_key = f"{today}_{symbol or 'ALL'}"
-        
-        # Use cache if updated within last 5 minutes
-        if (self.last_cache_update and 
-            cache_key in self.trade_cache and
-            (datetime.now() - self.last_cache_update).total_seconds() < 300):
-            return self.trade_cache[cache_key]
-        
+        """FIXED: Handle Webull date format MM/dd/yyyy"""
         try:
-            self.logger.debug(f"🔍 Fetching real account trades for {symbol or 'ALL'}")
+            today = datetime.now()
+            today_str = today.strftime('%Y-%m-%d')  # 2025-08-19
+            today_webull = today.strftime('%m/%d/%Y')  # 08/19/2025
             
-            # Get actual trade history from Webull using CORRECT method names
-            orders = []
+            self.logger.debug(f"Looking for orders from {today_str} (Webull format: {today_webull})")
             
-            try:
-                # FIXED: Use correct method names from webull library
-                current_orders = wb_client.get_current_orders()  # Gets pending/open orders
-                history_orders = wb_client.get_history_orders(status='All', count=50)  # Gets historical orders
-                
-                # Combine all orders
-                all_orders = []
-                if current_orders:
-                    all_orders.extend(current_orders)
-                if history_orders:
-                    all_orders.extend(history_orders)
-                
-                # Filter for today's FILLED trades
-                today_orders = []
-                for order in all_orders:
-                    try:
-                        # Handle different possible date formats from Webull API
-                        order_date = order.get('createTime', order.get('orderDate', order.get('time', '')))
-                        
-                        if order_date:
-                            # Parse the date/timestamp
-                            if isinstance(order_date, str):
-                                if len(order_date) > 10:  # Timestamp format
-                                    if order_date.isdigit():
-                                        # Unix timestamp in milliseconds
-                                        order_dt = datetime.fromtimestamp(int(order_date) / 1000)
-                                    else:
-                                        # ISO format or other string format
-                                        try:
-                                            order_dt = datetime.fromisoformat(order_date.replace('Z', '+00:00'))
-                                        except:
-                                            # Try parsing as standard format
-                                            order_dt = datetime.strptime(order_date[:10], '%Y-%m-%d')
-                                else:
-                                    # Date string format
-                                    order_dt = datetime.strptime(order_date, '%Y-%m-%d')
-                            else:
-                                # Numeric timestamp
-                                order_dt = datetime.fromtimestamp(order_date / 1000 if order_date > 1000000000000 else order_date)
-                            
-                            order_date_str = order_dt.strftime('%Y-%m-%d')
-                            
-                            # Only include today's FILLED orders
-                            order_status = order.get('status', order.get('orderStatus', '')).upper()
-                            if (order_date_str == today and 
-                                order_status in ['FILLED', 'PARTIALLY_FILLED', 'EXECUTED']):
-                                
-                                # Parse order data with multiple possible field names
-                                parsed_order = {
-                                    'symbol': order.get('ticker', order.get('symbol', order.get('stock', ''))),
-                                    'action': order.get('action', order.get('side', '')).upper(),
-                                    'quantity': float(order.get('filledQuantity', 
-                                                           order.get('quantity', 
-                                                           order.get('qty', 0)))),
-                                    'price': float(order.get('avgFilledPrice', 
-                                                          order.get('price', 
-                                                          order.get('fillPrice', 0)))),
-                                    'time': order_date_str,
-                                    'order_id': order.get('orderId', order.get('id', '')),
-                                    'status': order_status
-                                }
-                                
-                                # Normalize action names
-                                if parsed_order['action'] in ['BUY', 'B']:
-                                    parsed_order['action'] = 'BUY'
-                                elif parsed_order['action'] in ['SELL', 'S']:
-                                    parsed_order['action'] = 'SELL'
+            combo_orders = wb_client.get_history_orders(count=100)
+            
+            if not combo_orders:
+                self.logger.debug("No combo orders returned from API")
+                return []
+            
+            today_trades = []
+            
+            for combo_order in combo_orders:
+                try:
+                    if 'orders' not in combo_order or not isinstance(combo_order['orders'], list):
+                        continue
+                    
+                    for individual_order in combo_order['orders']:
+                        try:
+                            # Check if this order is from today using FIXED date parsing
+                            if self._is_order_from_today(individual_order, today_webull, today_str):
+                                trade = self._extract_trade_info(individual_order, combo_order)
                                 
                                 # Filter by symbol if specified
-                                if not symbol or parsed_order['symbol'] == symbol:
-                                    today_orders.append(parsed_order)
-                                    
-                    except Exception as e:
-                        self.logger.debug(f"Error parsing order: {e}")
-                        continue
-                
-                orders = today_orders
-                
-            except AttributeError as e:
-                self.logger.warning(f"⚠️ Webull API method not available: {e}")
-                self.logger.warning("⚠️ This may be due to an older version of the webull library")
-                orders = []
-            except Exception as e:
-                self.logger.warning(f"⚠️ Could not get Webull order data: {e}")
-                orders = []
+                                if symbol is None or trade.get('symbol') == symbol:
+                                    today_trades.append(trade)
+                                    self.logger.debug(f"✅ Found today's trade: {trade['symbol']} {trade['action']} {trade['quantity']}")
+                        
+                        except Exception as e:
+                            self.logger.debug(f"Error processing individual order: {e}")
+                            continue
+                            
+                except Exception as e:
+                    self.logger.debug(f"Error processing combo order: {e}")
+                    continue
             
-            # Cache the results
-            self.trade_cache[cache_key] = orders
-            self.last_cache_update = datetime.now()
-            
-            if orders:
-                self.logger.debug(f"📊 Found {len(orders)} real trades today for {symbol or 'ALL'}")
-                for order in orders:
-                    self.logger.debug(f"   {order['action']} {order['quantity']:.5f} {order['symbol']} @ ${order['price']:.2f}")
-            else:
-                self.logger.debug(f"📊 No real trades found today for {symbol or 'ALL'}")
-            
-            return orders
+            self.logger.info(f"📊 Found {len(today_trades)} today's trades via API")
+            return today_trades
             
         except Exception as e:
-            self.logger.error(f"❌ Error getting actual trades: {e}")
+            self.logger.error(f"Error getting actual trades: {e}")
             return []
+
+    def _is_order_from_today(self, individual_order, today_webull, today_iso):
+        """Check if order is from today - handles multiple date formats"""
+        
+        # Date fields to check
+        date_fields = ['createTime', 'filledTime', 'updateTime', 'time']
+        
+        for field in date_fields:
+            if field in individual_order:
+                date_value = individual_order[field]
+                
+                # Handle string dates (Webull format: "08/19/2025 11:15:39 EDT")
+                if isinstance(date_value, str):
+                    # Check if contains today's date in MM/dd/yyyy format
+                    if today_webull in date_value:
+                        return True
+                    # Check if contains today's date in yyyy-mm-dd format
+                    if today_iso in date_value:
+                        return True
+                        
+                # Handle timestamp dates (createTime0, filledTime0, updateTime0)
+                elif isinstance(date_value, (int, float)):
+                    try:
+                        # Handle milliseconds
+                        if date_value > 1e10:
+                            date_value = date_value / 1000
+                        
+                        dt = datetime.fromtimestamp(date_value)
+                        if dt.strftime('%Y-%m-%d') == today_iso:
+                            return True
+                    except:
+                        continue
+        
+        # Also check timestamp fields (createTime0, filledTime0, updateTime0)
+        timestamp_fields = ['createTime0', 'filledTime0', 'updateTime0']
+        for field in timestamp_fields:
+            if field in individual_order:
+                timestamp = individual_order[field]
+                if isinstance(timestamp, (int, float)):
+                    try:
+                        if timestamp > 1e10:
+                            timestamp = timestamp / 1000
+                        dt = datetime.fromtimestamp(timestamp)
+                        if dt.strftime('%Y-%m-%d') == today_iso:
+                            return True
+                    except:
+                        continue
+        
+        return False
+
+    def _extract_trade_info(self, individual_order, combo_order):
+        """Extract trade information from nested order structure"""
+        
+        # Extract symbol from ticker object
+        symbol = 'UNKNOWN'
+        if 'ticker' in individual_order and isinstance(individual_order['ticker'], dict):
+            symbol = individual_order['ticker'].get('symbol', 'UNKNOWN')
+        elif 'symbol' in individual_order:
+            symbol = individual_order['symbol']
+        
+        # Extract other fields
+        action = individual_order.get('action', combo_order.get('action', 'UNKNOWN')).upper()
+        quantity = float(individual_order.get('filledQuantity', 
+                        individual_order.get('totalQuantity',
+                        combo_order.get('filledQuantity', 
+                        combo_order.get('quantity', 0)))))
+        
+        price = float(individual_order.get('avgFilledPrice', 
+                    individual_order.get('price', 0)))
+        
+        status = individual_order.get('statusStr', 
+                individual_order.get('status',
+                combo_order.get('statusStr',
+                combo_order.get('status', 'UNKNOWN'))))
+        
+        # Get the best timestamp
+        timestamp = individual_order.get('createTime', 
+                individual_order.get('filledTime',
+                combo_order.get('createTime', '')))
+        
+        return {
+            'symbol': symbol,
+            'action': action,
+            'quantity': quantity,
+            'price': price,
+            'timestamp': timestamp,
+            'status': status
+        }
+    def _extract_nested_date(self, individual_order, combo_order):
+        """Extract date from nested order structure"""
+        date_fields = ['createTime', 'updateTime', 'filledTime', 'submitTime', 'time']
+        
+        # Check individual order first
+        for field in date_fields:
+            if field in individual_order:
+                return self._format_date(individual_order[field])
+        
+        # Check combo order as fallback  
+        for field in date_fields:
+            if field in combo_order:
+                return self._format_date(combo_order[field])
+        
+        return None
+
+    def _format_date(self, date_value):
+        """Format date value to YYYY-MM-DD"""
+        try:
+            if isinstance(date_value, str):
+                return date_value[:10]  # Take first 10 chars (YYYY-MM-DD)
+            elif isinstance(date_value, (int, float)):
+                if date_value > 1e10:
+                    date_value = date_value / 1000
+                dt = datetime.fromtimestamp(date_value)
+                return dt.strftime('%Y-%m-%d')
+        except:
+            pass
+        return None
         
     def detect_manual_trades(self, wb_client, database, symbol: str, account_manager) -> bool:
         """FIXED: Detect manual trades with proper account handling"""
@@ -621,560 +654,6 @@ class WyckoffReaccumulationDetector:
             return 'MEDIUM'
         else:
             return 'HIGH'
-
-
-class EnhancedTradingDatabase:
-    """
-    DEFINITIVE: Enhanced database manager with comprehensive tracking - FIXED VERSION
-    This is the single source of truth for all database operations
-    """
-    
-    def __init__(self, db_path="data/trading_bot.db"):
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(exist_ok=True)
-        self.bot_id = "enhanced_wyckoff_bot_v2"
-        self.init_database()
-    
-    def init_database(self):
-        """Initialize database tables with enhanced capabilities"""
-        with sqlite3.connect(self.db_path) as conn:
-            # Trading signals table
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS signals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date TEXT NOT NULL,
-                    symbol TEXT NOT NULL,
-                    phase TEXT NOT NULL,
-                    strength REAL NOT NULL,
-                    price REAL NOT NULL,
-                    volume_confirmation BOOLEAN NOT NULL,
-                    sector TEXT NOT NULL,
-                    combined_score REAL NOT NULL,
-                    action_taken TEXT,
-                    bot_id TEXT DEFAULT 'enhanced_wyckoff_bot_v2',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Enhanced trades table
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS trades (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date TEXT NOT NULL,
-                    symbol TEXT NOT NULL,
-                    action TEXT NOT NULL,
-                    quantity REAL NOT NULL,
-                    price REAL NOT NULL,
-                    total_value REAL NOT NULL,
-                    signal_phase TEXT,
-                    signal_strength REAL,
-                    account_type TEXT,
-                    order_id TEXT,
-                    status TEXT DEFAULT 'PENDING',
-                    day_trade_check TEXT,
-                    bot_id TEXT DEFAULT 'enhanced_wyckoff_bot_v2',
-                    trade_datetime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Enhanced positions table with FIXED multi-account support
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS positions (
-                    symbol TEXT NOT NULL,
-                    account_type TEXT NOT NULL, 
-                    total_shares REAL NOT NULL,
-                    avg_cost REAL NOT NULL,
-                    total_invested REAL NOT NULL,
-                    first_purchase_date TEXT NOT NULL,
-                    last_purchase_date TEXT NOT NULL,
-                    entry_phase TEXT DEFAULT 'UNKNOWN',
-                    entry_strength REAL DEFAULT 0.0,
-                    bot_id TEXT DEFAULT 'enhanced_wyckoff_bot_v2',
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (symbol, account_type, bot_id)
-                )
-            ''')
-            
-            # Enhanced positions table for detailed tracking
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS positions_enhanced (
-                    symbol TEXT NOT NULL,
-                    account_type TEXT NOT NULL, 
-                    total_shares REAL NOT NULL,
-                    avg_cost REAL NOT NULL,
-                    total_invested REAL NOT NULL,
-                    first_purchase_date TEXT NOT NULL,
-                    last_purchase_date TEXT NOT NULL,
-                    entry_phase TEXT DEFAULT 'UNKNOWN',
-                    entry_strength REAL DEFAULT 0.0,
-                    position_size_pct REAL DEFAULT 0.1,
-                    time_held_days INTEGER DEFAULT 0,
-                    volatility_percentile REAL DEFAULT 0.5,
-                    bot_id TEXT DEFAULT 'enhanced_wyckoff_bot_v2',
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (symbol, account_type, bot_id)
-                )
-            ''')
-            
-            # Day trade tracking table
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS day_trade_checks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    check_date TEXT NOT NULL,
-                    symbol TEXT NOT NULL,
-                    action TEXT NOT NULL,
-                    db_day_trade BOOLEAN NOT NULL,
-                    actual_day_trade BOOLEAN NOT NULL,
-                    manual_trades_detected BOOLEAN NOT NULL,
-                    recommendation TEXT NOT NULL,
-                    details TEXT,
-                    emergency_override BOOLEAN DEFAULT FALSE,
-                    bot_id TEXT DEFAULT 'enhanced_wyckoff_bot_v2',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Enhanced stop strategies table
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS stop_strategies (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT NOT NULL,
-                    strategy_type TEXT NOT NULL,
-                    initial_price REAL NOT NULL,
-                    stop_price REAL NOT NULL,
-                    stop_percentage REAL NOT NULL,
-                    trailing_high REAL,
-                    key_support_level REAL,
-                    key_resistance_level REAL,
-                    breakout_level REAL,
-                    pullback_low REAL,
-                    time_entered TIMESTAMP,
-                    context_data TEXT,
-                    stop_reason TEXT,
-                    is_active BOOLEAN DEFAULT TRUE,
-                    bot_id TEXT DEFAULT 'enhanced_wyckoff_bot_v2',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Partial sales tracking
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS partial_sales (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT NOT NULL,
-                    sale_date TEXT NOT NULL,
-                    shares_sold REAL NOT NULL,
-                    sale_price REAL NOT NULL,
-                    sale_reason TEXT NOT NULL,
-                    remaining_shares REAL NOT NULL,
-                    gain_pct REAL,
-                    profit_amount REAL,
-                    scaling_level TEXT,
-                    bot_id TEXT DEFAULT 'enhanced_wyckoff_bot_v2',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Bot runs table
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS bot_runs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_date TEXT NOT NULL,
-                    signals_found INTEGER NOT NULL,
-                    trades_executed INTEGER NOT NULL,
-                    wyckoff_sells INTEGER DEFAULT 0,
-                    profit_scales INTEGER DEFAULT 0,
-                    emergency_exits INTEGER DEFAULT 0,
-                    day_trades_blocked INTEGER DEFAULT 0,
-                    errors_encountered INTEGER NOT NULL,
-                    total_portfolio_value REAL,
-                    available_cash REAL,
-                    emergency_mode BOOLEAN DEFAULT FALSE,
-                    market_condition TEXT,
-                    portfolio_drawdown_pct REAL DEFAULT 0.0,
-                    status TEXT NOT NULL,
-                    log_details TEXT,
-                    bot_id TEXT DEFAULT 'enhanced_wyckoff_bot_v2',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Add indexes
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_trades_date_symbol ON trades(date, symbol)')
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_stop_strategies_symbol ON stop_strategies(symbol, is_active)')
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_positions_bot_id ON positions(bot_id)')
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_positions_enhanced_bot_id ON positions_enhanced(bot_id)')
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_partial_sales_symbol ON partial_sales(symbol, sale_date)')
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_day_trade_checks_date ON day_trade_checks(check_date, symbol)')
-    
-    def log_day_trade_check(self, check_result: DayTradeCheckResult, emergency_override: bool = False):
-        """Log day trade compliance check"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute('''
-                INSERT INTO day_trade_checks (check_date, symbol, action, db_day_trade, 
-                                            actual_day_trade, manual_trades_detected, 
-                                            recommendation, details, emergency_override, bot_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                datetime.now().strftime('%Y-%m-%d'),
-                check_result.symbol,
-                check_result.action,
-                check_result.would_be_day_trade,
-                len(check_result.actual_trades_today) > 0,
-                check_result.manual_trades_detected,
-                check_result.recommendation,
-                check_result.details,
-                emergency_override,
-                self.bot_id
-            ))
-    
-    def log_signal(self, signal: WyckoffSignal, action_taken: str = None):
-        """Log a trading signal"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute('''
-                INSERT INTO signals (date, symbol, phase, strength, price, volume_confirmation, 
-                                   sector, combined_score, action_taken, bot_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                datetime.now().strftime('%Y-%m-%d'),
-                signal.symbol,
-                signal.phase,
-                signal.strength,
-                signal.price,
-                signal.volume_confirmation,
-                signal.sector,
-                signal.combined_score,
-                action_taken,
-                self.bot_id
-            ))
-    
-    def log_trade(self, symbol: str, action: str, quantity: float, price: float, 
-                  signal_phase: str, signal_strength: float, account_type: str, 
-                  order_id: str = None, day_trade_check: str = None):
-        """Log a trade execution with day trade check info"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute('''
-                INSERT INTO trades (date, symbol, action, quantity, price, total_value, 
-                                  signal_phase, signal_strength, account_type, order_id, 
-                                  day_trade_check, bot_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                datetime.now().strftime('%Y-%m-%d'),
-                symbol,
-                action,
-                quantity,
-                price,
-                quantity * price,
-                signal_phase,
-                signal_strength,
-                account_type,
-                order_id,
-                day_trade_check,
-                self.bot_id
-            ))
-    
-    def update_position(self, symbol: str, shares: float, cost: float, account_type: str, 
-                       entry_phase: str = None, entry_strength: float = None):
-        """
-        FIXED: Update position tracking with enhanced data for a specific account
-        Updates both positions and positions_enhanced tables with proper sync
-        """
-        today = datetime.now().strftime('%Y-%m-%d')
-        
-        with sqlite3.connect(self.db_path) as conn:
-            # Update main positions table
-            self._update_positions_table(conn, symbol, shares, cost, account_type, 
-                                       entry_phase, entry_strength, today)
-            
-            # FIXED: Update enhanced positions table with proper sync
-            self._update_positions_enhanced_table_fixed(conn, symbol, shares, cost, account_type, 
-                                                      entry_phase, entry_strength, today)
-    
-    def _update_positions_table(self, conn, symbol: str, shares: float, cost: float, 
-                              account_type: str, entry_phase: str, entry_strength: float, today: str):
-        """Update main positions table"""
-        # Use symbol, account_type, AND bot_id to find the record
-        existing = conn.execute(
-            '''SELECT total_shares, avg_cost, total_invested, first_purchase_date, 
-                    entry_phase, entry_strength FROM positions 
-            WHERE symbol = ? AND account_type = ? AND bot_id = ?''',
-            (symbol, account_type, self.bot_id)
-        ).fetchone()
-        
-        if existing:
-            old_shares, old_avg_cost, old_invested, first_date, old_phase, old_strength = existing
-            new_shares = old_shares + shares
-            
-            if new_shares > 0:
-                new_invested = old_invested + (shares * cost)
-                new_avg_cost = new_invested / new_shares
-                use_phase = entry_phase or old_phase or 'UNKNOWN'
-                use_strength = entry_strength or old_strength or 0.0
-            else:
-                new_invested = 0
-                new_avg_cost = 0
-                use_phase = old_phase
-                use_strength = old_strength
-            
-            conn.execute('''
-                UPDATE positions 
-                SET total_shares = ?, avg_cost = ?, total_invested = ?, 
-                    last_purchase_date = ?, entry_phase = ?, entry_strength = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE symbol = ? AND account_type = ? AND bot_id = ?
-            ''', (new_shares, new_avg_cost, new_invested, today, use_phase, use_strength, 
-                  symbol, account_type, self.bot_id))
-        else:
-            # Insert new position with account_type
-            conn.execute('''
-                INSERT INTO positions (symbol, account_type, total_shares, avg_cost, total_invested, 
-                                    first_purchase_date, last_purchase_date, 
-                                    entry_phase, entry_strength, bot_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (symbol, account_type, shares, cost, shares * cost, today, today,
-                entry_phase or 'UNKNOWN', entry_strength or 0.0, self.bot_id))
-    
-    def _update_positions_enhanced_table_fixed(self, conn, symbol: str, shares: float, cost: float, 
-                                             account_type: str, entry_phase: str, entry_strength: float, today: str):
-        """FIXED: Enhanced positions table update with proper synchronization"""
-        
-        # Get current enhanced position if it exists
-        existing_enhanced = conn.execute(
-            '''SELECT total_shares, avg_cost, total_invested, first_purchase_date, 
-                    entry_phase, entry_strength, position_size_pct, time_held_days, volatility_percentile 
-            FROM positions_enhanced 
-            WHERE symbol = ? AND account_type = ? AND bot_id = ?''',
-            (symbol, account_type, self.bot_id)
-        ).fetchone()
-        
-        if existing_enhanced:
-            old_shares, old_avg_cost, old_invested, first_date, old_phase, old_strength, old_size_pct, old_days, old_vol = existing_enhanced
-            new_shares = old_shares + shares
-            
-            # Calculate time held
-            try:
-                first_purchase_dt = datetime.strptime(first_date, '%Y-%m-%d')
-                time_held_days = (datetime.now() - first_purchase_dt).days
-            except:
-                time_held_days = old_days or 0
-            
-            if new_shares > 0:
-                new_invested = old_invested + (shares * cost)
-                new_avg_cost = new_invested / new_shares
-                use_phase = entry_phase or old_phase or 'UNKNOWN'
-                use_strength = entry_strength or old_strength or 0.0
-            else:
-                # Position closed
-                new_invested = 0
-                new_avg_cost = 0
-                use_phase = old_phase
-                use_strength = old_strength
-            
-            # Update enhanced position
-            conn.execute('''
-                UPDATE positions_enhanced 
-                SET total_shares = ?, avg_cost = ?, total_invested = ?, 
-                    last_purchase_date = ?, entry_phase = ?, entry_strength = ?,
-                    position_size_pct = ?, time_held_days = ?, volatility_percentile = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE symbol = ? AND account_type = ? AND bot_id = ?
-            ''', (new_shares, new_avg_cost, new_invested, today, use_phase, use_strength,
-                  old_size_pct or 0.1, time_held_days, old_vol or 0.5,
-                  symbol, account_type, self.bot_id))
-            
-        else:
-            # Insert new enhanced position - only if we're adding shares
-            if shares > 0:
-                conn.execute('''
-                    INSERT INTO positions_enhanced (symbol, account_type, total_shares, avg_cost, total_invested, 
-                                                  first_purchase_date, last_purchase_date, 
-                                                  entry_phase, entry_strength, position_size_pct,
-                                                  time_held_days, volatility_percentile, bot_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (symbol, account_type, shares, cost, shares * cost, today, today,
-                      entry_phase or 'UNKNOWN', entry_strength or 0.0, 0.1,
-                      0, 0.5, self.bot_id))
-    
-    def get_position(self, symbol: str, account_type: str = None) -> Optional[Dict]:
-        """Get current position for a symbol in a specific account or all accounts"""
-        with sqlite3.connect(self.db_path) as conn:
-            if account_type:
-                # Get position for specific account from enhanced table
-                result = conn.execute('''
-                    SELECT symbol, account_type, total_shares, avg_cost, total_invested, 
-                           first_purchase_date, last_purchase_date, entry_phase, 
-                           entry_strength, position_size_pct, time_held_days, 
-                           volatility_percentile, bot_id, updated_at
-                    FROM positions_enhanced 
-                    WHERE symbol = ? AND account_type = ? AND bot_id = ?
-                ''', (symbol, account_type, self.bot_id)).fetchone()
-                
-                if result:
-                    columns = ['symbol', 'account_type', 'total_shares', 'avg_cost', 'total_invested', 
-                              'first_purchase_date', 'last_purchase_date', 'entry_phase', 
-                              'entry_strength', 'position_size_pct', 'time_held_days',
-                              'volatility_percentile', 'bot_id', 'updated_at']
-                    return dict(zip(columns, result))
-            else:
-                # Get all positions for this symbol across accounts
-                results = conn.execute('''
-                    SELECT symbol, account_type, total_shares, avg_cost, total_invested, 
-                           first_purchase_date, last_purchase_date, entry_phase, 
-                           entry_strength, position_size_pct, time_held_days,
-                           volatility_percentile, bot_id, updated_at
-                    FROM positions_enhanced 
-                    WHERE symbol = ? AND bot_id = ? AND total_shares > 0
-                ''', (symbol, self.bot_id)).fetchall()
-                
-                if results:
-                    columns = ['symbol', 'account_type', 'total_shares', 'avg_cost', 'total_invested', 
-                              'first_purchase_date', 'last_purchase_date', 'entry_phase', 
-                              'entry_strength', 'position_size_pct', 'time_held_days',
-                              'volatility_percentile', 'bot_id', 'updated_at']
-                    return [dict(zip(columns, row)) for row in results]
-        
-        return None
-    
-    def get_all_positions(self) -> Dict[str, Dict]:
-        """Get all current positions grouped by account"""
-        positions = {}
-        
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                results = conn.execute('''
-                    SELECT symbol, account_type, total_shares, avg_cost, total_invested,
-                           entry_phase, entry_strength, first_purchase_date, last_purchase_date,
-                           position_size_pct, time_held_days, volatility_percentile
-                    FROM positions_enhanced 
-                    WHERE total_shares > 0 AND bot_id = ?
-                    ORDER BY account_type, symbol
-                ''', (self.bot_id,)).fetchall()
-                
-                for row in results:
-                    symbol, account_type, shares, avg_cost, invested, entry_phase, entry_strength, first_date, last_date, size_pct, days, vol_pct = row
-                    
-                    # Create account-specific key
-                    position_key = f"{symbol}_{account_type}"
-                    
-                    positions[position_key] = {
-                        'symbol': symbol,
-                        'account_type': account_type,
-                        'shares': shares,
-                        'avg_cost': avg_cost,
-                        'total_invested': invested,
-                        'entry_phase': entry_phase or 'UNKNOWN',
-                        'entry_strength': entry_strength or 0.0,
-                        'first_purchase_date': first_date,
-                        'last_purchase_date': last_date,
-                        'position_size_pct': size_pct or 0.1,
-                        'time_held_days': days or 0,
-                        'volatility_percentile': vol_pct or 0.5
-                    }
-        except Exception as e:
-            print(f"Error getting positions: {e}")
-        
-        return positions
-    
-    def log_partial_sale(self, symbol: str, shares_sold: float, sale_price: float, 
-                        sale_reason: str, remaining_shares: float, gain_pct: float, 
-                        profit_amount: float, scaling_level: str):
-        """Log partial sale for tracking"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute('''
-                INSERT INTO partial_sales (symbol, sale_date, shares_sold, sale_price, 
-                                         sale_reason, remaining_shares, gain_pct, profit_amount, 
-                                         scaling_level, bot_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                symbol, datetime.now().strftime('%Y-%m-%d'), shares_sold, sale_price,
-                sale_reason, remaining_shares, gain_pct, profit_amount, scaling_level, self.bot_id
-            ))
-    
-    def already_scaled_at_level(self, symbol: str, gain_pct: float) -> bool:
-        """Check if we already scaled at this gain level"""
-        with sqlite3.connect(self.db_path) as conn:
-            result = conn.execute('''
-                SELECT COUNT(*) FROM partial_sales 
-                WHERE symbol = ? AND bot_id = ? AND gain_pct >= ? AND sale_date = ?
-            ''', (symbol, self.bot_id, gain_pct - 0.01, datetime.now().strftime('%Y-%m-%d'))).fetchone()
-            
-            return result[0] > 0
-    
-    def deactivate_stop_strategies(self, symbol: str):
-        """Deactivate all stop strategies for a symbol"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute('''
-                UPDATE stop_strategies 
-                SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
-                WHERE symbol = ? AND bot_id = ?
-            ''', (symbol, self.bot_id))
-    
-    def get_todays_trades(self, symbol: str = None) -> List[Dict]:
-        """Get today's trades for day trade prevention"""
-        today = datetime.now().strftime('%Y-%m-%d')
-        
-        with sqlite3.connect(self.db_path) as conn:
-            if symbol:
-                query = '''
-                    SELECT * FROM trades 
-                    WHERE date = ? AND symbol = ? AND bot_id = ?
-                    ORDER BY trade_datetime
-                '''
-                results = conn.execute(query, (today, symbol, self.bot_id)).fetchall()
-            else:
-                query = '''
-                    SELECT * FROM trades 
-                    WHERE date = ? AND bot_id = ?
-                    ORDER BY trade_datetime
-                '''
-                results = conn.execute(query, (today, self.bot_id)).fetchall()
-            
-            columns = ['id', 'date', 'symbol', 'action', 'quantity', 'price', 'total_value',
-                      'signal_phase', 'signal_strength', 'account_type', 'order_id', 'status',
-                      'day_trade_check', 'bot_id', 'trade_datetime', 'created_at']
-            
-            return [dict(zip(columns, row)) for row in results]
-    
-    def would_create_day_trade(self, symbol: str, action: str) -> bool:
-        """Check if this trade would create a day trade (DATABASE ONLY)"""
-        today_trades = self.get_todays_trades(symbol)
-        
-        if not today_trades:
-            return False
-        
-        # Count buys and sells today
-        buys_today = sum(1 for trade in today_trades if trade['action'] == 'BUY')
-        sells_today = sum(1 for trade in today_trades if trade['action'] == 'SELL')
-        
-        # Day trade occurs when we buy and sell the same security on the same day
-        if action == 'SELL' and buys_today > 0:
-            return True
-        elif action == 'BUY' and sells_today > 0:
-            return True
-        
-        return False
-    
-    def log_bot_run(self, signals_found: int, trades_executed: int, wyckoff_sells: int = 0,
-                    profit_scales: int = 0, emergency_exits: int = 0, day_trades_blocked: int = 0,
-                    errors: int = 0, portfolio_value: float = 0, available_cash: float = 0, 
-                    emergency_mode: bool = False, market_condition: str = "NORMAL", 
-                    portfolio_drawdown_pct: float = 0.0, status: str = "COMPLETED", log_details: str = ""):
-        """Log enhanced bot run statistics with day trade blocking"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute('''
-                INSERT INTO bot_runs (run_date, signals_found, trades_executed, wyckoff_sells,
-                                    profit_scales, emergency_exits, day_trades_blocked, errors_encountered, 
-                                    total_portfolio_value, available_cash, emergency_mode,
-                                    market_condition, portfolio_drawdown_pct, status, log_details, bot_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                signals_found, trades_executed, wyckoff_sells, profit_scales, emergency_exits,
-                day_trades_blocked, errors, portfolio_value, available_cash, emergency_mode, 
-                market_condition, portfolio_drawdown_pct, status, log_details, self.bot_id
-            ))
 
 
 class EnhancedWyckoffAnalyzer:
@@ -2137,10 +1616,34 @@ class EnhancedFractionalTradingBot:
             self.main_system.account_manager, emergency  # ADD account_manager parameter
         )
     
-    def get_current_positions(self) -> Dict[str, Dict]:
-        """Get current positions from database"""
-        return self.database.get_all_positions()
-    
+    def get_current_positions(self):
+        """Get current positions with consistent naming"""
+        positions = {}
+        
+        try:
+            all_positions = self.database.get_all_positions()
+            
+            for account_type, account_positions in all_positions.items():
+                for symbol, position in account_positions.items():
+                    position_key = f"{symbol}_{account_type}"
+                    
+                    position_with_symbol = position.copy()
+                    position_with_symbol['symbol'] = symbol
+                    position_with_symbol['position_key'] = position_key
+                    
+                    # ✅ ENSURE BOTH NAMING CONVENTIONS WORK:
+                    if 'total_shares' in position_with_symbol:
+                        position_with_symbol['shares'] = position_with_symbol['total_shares']
+                    elif 'shares' in position_with_symbol:
+                        position_with_symbol['total_shares'] = position_with_symbol['shares']
+                    
+                    positions[position_key] = position_with_symbol
+                    
+        except Exception as e:
+            self.logger.error(f"Error getting current positions: {e}")
+            
+        return positions
+        
     def _ensure_valid_session(self) -> bool:
         """FIXED: Ensure we have a valid session WITHOUT resetting account context"""
         try:
@@ -3388,12 +2891,12 @@ class EnhancedFractionalTradingBot:
                                         self.logger.info(f"💰 Executing signal: {signal.symbol} (strength: {signal.strength:.2f})")
 
                                         # TEMPORARILY BLOCK BUY UNCOMMENT TO ENABLE TRADE EXECUTION
-                                        if self.execute_buy_order(signal, best_account, position_size):
-                                            trades_executed += 1
-                                            best_account.settled_funds -= position_size
+                                        # if self.execute_buy_order(signal, best_account, position_size):
+                                        #     trades_executed += 1
+                                        #     best_account.settled_funds -= position_size
                                             
-                                            # Add small delay between orders
-                                            time_module.sleep(2)
+                                        #     # Add small delay between orders
+                                        #     time_module.sleep(2)
                                     else:
                                         self.logger.info(f"⚠️ Skipping {signal.symbol}: insufficient cash or invalid position size")
                     else:
