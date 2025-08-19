@@ -1424,23 +1424,23 @@ class DynamicAccountManager:
             max_positions = 2
             min_balance_pct = 0.40  # Keep 40% cash
         elif total_cash < 300:
-            base_position_pct = 0.10  # 10% of total cash
-            max_positions = 3
-            min_balance_pct = 0.30  # Keep 30% cash
+            base_position_pct = 0.15  # 10% of total cash
+            max_positions = 8
+            min_balance_pct = 0.15  # Keep 30% cash
         elif total_cash < 500:
-            base_position_pct = 0.12  # 12% of total cash
-            max_positions = 7
-            min_balance_pct = 0.25  # Keep 25% cash
-        else:
-            base_position_pct = 0.15  # 15% of total cash
+            base_position_pct = 0.20  # 12% of total cash
             max_positions = 12
-            min_balance_pct = 0.20  # Keep 20% cash
+            min_balance_pct = 0.10  # Keep 25% cash
+        else:
+            base_position_pct = 0.22  # 15% of total cash
+            max_positions = 15
+            min_balance_pct = 0.05  # Keep 20% cash
         
         # FIXED: Calculate based on per-account maximum to prevent overdrafts
         base_position_size = min(
             total_cash * base_position_pct,  # Percentage of total cash
             max_cash_available * 0.4,       # Max 40% of any single account
-            15.0                            # Hard cap at $15 per position
+            20.0                            # Hard cap at $15 per position
         )
         
         min_balance_preserve = total_cash * min_balance_pct
@@ -1460,10 +1460,10 @@ class DynamicAccountManager:
         
         # FIXED: More conservative profit targets
         profit_targets = [
-            {'gain_pct': 0.06, 'sell_pct': 0.15, 'description': '6% gain: Take 15% profit'},
-            {'gain_pct': 0.12, 'sell_pct': 0.20, 'description': '12% gain: Take 20% more'},
-            {'gain_pct': 0.20, 'sell_pct': 0.25, 'description': '20% gain: Take 25% more'},
-            {'gain_pct': 0.30, 'sell_pct': 0.40, 'description': '30% gain: Take final 40%'}
+            {'gain_pct': 0.02, 'sell_pct': 0.15, 'description': '6% gain: Take 15% profit'},
+            {'gain_pct': 0.06, 'sell_pct': 0.20, 'description': '12% gain: Take 20% more'},
+            {'gain_pct': 0.12, 'sell_pct': 0.25, 'description': '20% gain: Take 25% more'},
+            {'gain_pct': 0.20, 'sell_pct': 0.40, 'description': '30% gain: Take final 40%'}
         ]
         
         return {
@@ -1501,8 +1501,8 @@ class DynamicAccountManager:
                 'Creek': {'initial_allocation': 0.0, 'allow_additions': False, 'max_total_allocation': 0.0}
             },
             'profit_targets': [
-                {'gain_pct': 0.06, 'sell_pct': 0.15, 'description': '6% gain: Take 15% profit'},
-                {'gain_pct': 0.12, 'sell_pct': 0.20, 'description': '12% gain: Take 20% more'},
+                {'gain_pct': 0.02, 'sell_pct': 0.15, 'description': '6% gain: Take 15% profit'},
+                {'gain_pct': 0.06, 'sell_pct': 0.20, 'description': '12% gain: Take 20% more'},
                 {'gain_pct': 0.20, 'sell_pct': 0.25, 'description': '20% gain: Take 25% more'}
             ],
             'calculated_at': datetime.now().isoformat(),
@@ -1531,10 +1531,10 @@ class DynamicProfitTargetCalculator:
             account_size = market_data.get('account_value', 1000)
             
             base_targets = [
-                {'gain_pct': 0.06, 'sell_pct': 0.15},
-                {'gain_pct': 0.12, 'sell_pct': 0.20},
-                {'gain_pct': 0.20, 'sell_pct': 0.25},
-                {'gain_pct': 0.30, 'sell_pct': 0.40}
+                {'gain_pct': 0.02, 'sell_pct': 0.15},
+                {'gain_pct': 0.06, 'sell_pct': 0.20},
+                {'gain_pct': 0.12, 'sell_pct': 0.25},
+                {'gain_pct': 0.20, 'sell_pct': 0.40}
             ]
             
             # Phase multipliers
