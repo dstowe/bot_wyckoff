@@ -776,9 +776,70 @@ class EnhancedTradingDatabase:
                 ''', (self.bot_id,)).fetchall()
                 
                 symbols = [row[0] for row in results]
-        
+                        
         except Exception as e:
             # Log error but don't crash
             pass
         
         return symbols
+    
+    def already_scaled_at_level(self, symbol: str, gain_level: float, tolerance: float = 0.01) -> bool:
+        """
+        Check if we've already scaled out at a particular gain level
+        
+        Args:
+            symbol: Stock symbol to check
+            gain_level: Gain percentage level (e.g. 0.06 for 6%)
+            tolerance: Tolerance for matching gain levels (default 1%)
+        
+        Returns:
+            bool: True if already scaled at this level, False otherwise
+        """
+        try:
+            today = datetime.now().strftime('%Y-%m-%d')
+            
+            with sqlite3.connect(self.db_path) as conn:
+                # Look for partial sales at this gain level today
+                results = conn.execute('''
+                    SELECT gain_pct, scaling_level 
+                    FROM partial_sales 
+                    WHERE symbol = ? AND sale_date = ? AND bot_id = ?
+                    ORDER BY gain_pct DESC
+                ''', (symbol, today, self.bot_id)).fetchall()
+                
+                if not results:
+                    return False
+                
+                # Check if any scaling was done at or near this gain level
+                for gain_pct, scaling_level in results:
+                    if gain_pct is not None:
+                        # Check if within tolerance
+                        if abs(gain_pct - gain_level) <= tolerance:
+                            self.logger.debug(f"Already scaled {symbol} at {gain_pct:.1%} level")
+                            return True
+                
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Error checking scaling level for {symbol}: {e}")
+            return False  # Conservative: assume not scaled to allow scaling
+
+    def deactivate_stop_strategies(self, symbol: str):
+        """
+        Deactivate stop strategies for a symbol (called after exits)
+        
+        Args:
+            symbol: Stock symbol to deactivate stops for
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('''
+                    UPDATE stop_strategies 
+                    SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+                    WHERE symbol = ? AND bot_id = ? AND is_active = TRUE
+                ''', (symbol, self.bot_id))
+                
+                self.logger.debug(f"Deactivated stop strategies for {symbol}")
+                
+        except Exception as e:
+            self.logger.error(f"Error deactivating stop strategies for {symbol}: {e}")    
