@@ -2089,33 +2089,7 @@ class EnhancedFractionalTradingBot:
             
         except Exception as e:
             self.logger.error(f"❌ Error executing enhanced profit scaling: {e}")
-            return False
-    
-    def run_periodic_reconciliation(self) -> bool:
-        """Run position reconciliation periodically"""
-        try:
-            if (self.last_reconciliation is None or 
-                (datetime.now() - self.last_reconciliation).total_seconds() > 3600):
-                
-                self.logger.info("🔄 Running periodic position reconciliation...")
-                
-                reconciliation = self.comprehensive_exit_manager.reconcile_positions(
-                    self.main_system.wb, self.main_system.account_manager
-                )
-                
-                if reconciliation['discrepancies_found']:
-                    self.logger.warning(f"⚠️ Found {len(reconciliation['discrepancies_found'])} discrepancies")
-                    for disc in reconciliation['discrepancies_found']:
-                        self.logger.warning(f"   {disc['symbol']}: Real={disc['real_shares']:.3f}, Bot={disc['bot_shares']:.3f}")
-                
-                self.last_reconciliation = datetime.now()
-                return True
-        
-        except Exception as e:
-            self.logger.error(f"❌ Error in reconciliation: {e}")
-        
-        return False
-    
+            return False      
     
     
     def scan_for_position_additions(self, current_positions: Dict) -> List[Dict]:
@@ -2650,10 +2624,8 @@ class EnhancedFractionalTradingBot:
             
             if not self.main_system.run():
                 return False
-            
-            # Initial reconciliation
-            self.run_periodic_reconciliation()
-            
+           
+          
             # Run enhanced trading cycle with day trade protection
             trades, wyckoff_sells, profit_scales, emergency_exits, day_trades_blocked, positions_added = self.run_enhanced_trading_cycle()
             
