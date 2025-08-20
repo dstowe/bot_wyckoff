@@ -635,7 +635,7 @@ class DynamicAccountManager:
             min_balance_pct = 0.40  # Keep 40% cash
         elif total_cash < 300:
             base_position_pct = 0.15  # 10% of total cash
-            max_positions = 8
+            max_positions = 12
             min_balance_pct = 0.15  # Keep 30% cash
         elif total_cash < 500:
             base_position_pct = 0.20  # 12% of total cash
@@ -694,7 +694,7 @@ class DynamicAccountManager:
         }
     
     def _get_fallback_config(self) -> Dict:
-        """FIXED: More conservative fallback configuration"""
+        # FIXED: More conservative fallback configuration
         return {
             'total_value': 100.0,
             'total_cash': 100.0,
