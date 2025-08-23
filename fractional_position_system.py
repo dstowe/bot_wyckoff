@@ -631,15 +631,15 @@ class DynamicAccountManager:
         # FIXED: Much more conservative position sizing
         if total_cash < 100:
             base_position_pct = 0.08  # 8% of total cash
-            max_positions = 2
+            max_positions = 20
             min_balance_pct = 0.40  # Keep 40% cash
         elif total_cash < 300:
             base_position_pct = 0.15  # 10% of total cash
-            max_positions = 12
+            max_positions = 32
             min_balance_pct = 0.15  # Keep 30% cash
         elif total_cash < 500:
             base_position_pct = 0.20  # 12% of total cash
-            max_positions = 12
+            max_positions = 50
             min_balance_pct = 0.10  # Keep 25% cash
         else:
             base_position_pct = 0.22  # 15% of total cash
