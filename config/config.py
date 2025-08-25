@@ -66,9 +66,9 @@ class PersonalTradingConfig:
     }
     
     # Position management
-    MAX_POSITIONS_TOTAL = 10
+    MAX_POSITIONS_TOTAL = 200
     MAX_POSITION_VALUE_PERCENT = 0.25  # 25% of account
-    MIN_POSITION_VALUE = 5.00
+    MIN_POSITION_VALUE = 6.00
     
     # Gap trading parameters
     GAP_MIN_SIZE = 0.01  # 1% minimum gap
@@ -117,7 +117,7 @@ class PersonalTradingConfig:
     REACCUMULATION_SETTINGS = {
         'enabled': True,
         'max_additions_per_position': 3,
-        'max_additions_per_day': 3,
+        'max_additions_per_day': 12,
         'min_days_between_additions': 2,
         'max_position_size_multiplier': 2.0,
         'min_addition_percentage': 0.1,
